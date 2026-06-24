@@ -24,10 +24,12 @@ router.get("/", verificarToken, async (req, res) => {
     `;
 
     if (user.rol === "vendedor") {
-      query += " WHERE v.usuario_id = $1";
+      query += " WHERE v.usuario_id = $1 ORDER BY v.fecha DESC";
       const result = await pool.query(query, [user.id]);
       return res.json(result.rows);
     }
+
+    query += " ORDER BY v.fecha DESC";
 
     const result = await pool.query(query);
     res.json(result.rows);
