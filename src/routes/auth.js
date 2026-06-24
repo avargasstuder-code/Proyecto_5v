@@ -9,13 +9,9 @@ const router = Router();
 const SECRET = process.env.JWT_SECRET;
 
 // REGISTRAR USUARIO
-router.post(
-  "/register",
-  verificarToken,
-  verificarAdmin,
-  async (req, res) => {
-
-    const { nombre, email, password, rol } = req.body;
+router.post("/register", verificarToken, verificarAdmin, async (req, res) => {
+    const { nombre, password, rol } = req.body;
+    const email = req.body.email?.toLowerCase();
 
     // VALIDAR EMAIL
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -65,7 +61,8 @@ router.post(
 
 // LOGIN
 router.post("/login", async (req, res) => {
-  const { email, password } = req.body;
+  const email = req.body.email?.toLowerCase(); 
+  const { password } = req.body;
 
   const result = await pool.query(
     "SELECT * FROM usuarios WHERE email = $1",
@@ -119,7 +116,6 @@ router.get(
     res.json(result.rows);
 });
 
-// ACTIVAR / DESACTIVAR
 // ACTIVAR / DESACTIVAR
 router.put(
   "/usuarios/:id/activo",
@@ -183,12 +179,8 @@ router.put(
 });
 
 // CAMBIAR CORREO
-router.put(
-  "/cambiar-email",
-  verificarToken,
-  async (req, res) => {
-
-    const { email } = req.body;
+router.put("/cambiar-email", verificarToken, async (req, res) => {
+  const email = req.body.email?.toLowerCase();
 
     await pool.query(
       "UPDATE usuarios SET email = $1 WHERE id = $2",
