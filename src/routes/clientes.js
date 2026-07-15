@@ -29,6 +29,7 @@ router.post("/", async (req, res) => {
 
   const {
     nombre,
+    apellido,
     rut,
     direccion,
     ciudad_id,
@@ -59,16 +60,18 @@ router.post("/", async (req, res) => {
       INSERT INTO clientes
       (
         nombre,
+        apellido,
         rut,
         direccion,
         ciudad_id,
         dia_id,
         telefono
       )
-      VALUES ($1,$2,$3,$4,$5,$6)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
       RETURNING *
     `, [
       nombre,
+      apellido,
       rut,
       direccion,
       ciudad_id,
