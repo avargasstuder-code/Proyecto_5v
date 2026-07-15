@@ -16,7 +16,7 @@ router.get("/", verificarToken, async (req, res) => {
         v.metodo_pago,
         v.dias_cheque,
         v.fecha,
-        c.nombre AS cliente,
+        c.nombre || ' ' || c.apellido AS cliente,
         u.nombre AS usuario
       FROM ventas v
       JOIN clientes c ON v.cliente_id = c.id
@@ -46,7 +46,7 @@ router.get("/:id", verificarToken, async (req, res) => {
 
   try {
     const venta = await pool.query(
-      `SELECT v.*, c.nombre AS cliente, u.nombre AS usuario
+      `SELECT v.*, c.nombre || ' ' || c.apellido AS cliente, c.rut AS rut, u.nombre AS usuario
        FROM ventas v
        JOIN clientes c ON v.cliente_id = c.id
        JOIN usuarios u ON v.usuario_id = u.id
