@@ -4,15 +4,27 @@ import { verificarToken } from "../middleware/auth.js";
 
 const router = Router();
 
-// OBTENER CLIENTES
-router.get("/", async (req, res) => {
+// OBTENER CLIENTES (vista por día - solo activos, filtrados por vendedor)
+router.get("/", verificarToken, async (req, res) => {
   try {
-    const result = await pool.query(`
+    const user = req.user;
+
+    let query = `
       SELECT c.*, d.nombre AS dia
       FROM clientes c
       JOIN dias_visita d ON d.id = c.dia_id
-      ORDER BY d.id, c.nombre
-    `);
+      WHERE c.activo = true
+    `;
+    const params = [];
+
+    if (user.rol === "vendedor") {
+      params.push(user.id);
+      query += ` AND c.usuario_id = $${params.length}`;
+    }
+
+    query += " ORDER BY d.id, c.nombre";
+
+    const result = await pool.query(query, params);
 
     res.json(result.rows);
 
@@ -24,8 +36,41 @@ router.get("/", async (req, res) => {
   }
 });
 
-// CREAR CLIENTE
-router.post("/", async (req, res) => {
+// LISTADO COMPLETO (activos e inactivos, con ciudad y vendedor) - para editar/desactivar
+router.get("/todos", verificarToken, async (req, res) => {
+  try {
+    const user = req.user;
+
+    let query = `
+      SELECT c.*, d.nombre AS dia, ciu.nombre AS ciudad, u.nombre AS vendedor
+      FROM clientes c
+      JOIN dias_visita d ON d.id = c.dia_id
+      LEFT JOIN ciudades ciu ON ciu.id = c.ciudad_id
+      LEFT JOIN usuarios u ON u.id = c.usuario_id
+    `;
+    const params = [];
+
+    if (user.rol === "vendedor") {
+      params.push(user.id);
+      query += ` WHERE c.usuario_id = $${params.length}`;
+    }
+
+    query += " ORDER BY c.nombre";
+
+    const result = await pool.query(query, params);
+
+    res.json(result.rows);
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      error: "Error al obtener listado de clientes"
+    });
+  }
+});
+
+// CREAR CLIENTE (queda asignado al usuario logueado)
+router.post("/", verificarToken, async (req, res) => {
 
   const {
     nombre,
@@ -39,7 +84,7 @@ router.post("/", async (req, res) => {
 
   try {
 
-    if (!nombre || !rut || !dia_id) {
+    if (!nombre || !apellido || !rut || !dia_id) {
       return res.status(400).json({
         error: "Faltan datos obligatorios"
       });
@@ -65,9 +110,11 @@ router.post("/", async (req, res) => {
         direccion,
         ciudad_id,
         dia_id,
-        telefono
+        telefono,
+        usuario_id,
+        activo
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true)
       RETURNING *
     `, [
       nombre,
@@ -76,7 +123,8 @@ router.post("/", async (req, res) => {
       direccion,
       ciudad_id,
       dia_id,
-      telefono
+      telefono,
+      req.user.id
     ]);
 
     res.json(result.rows[0]);
@@ -88,6 +136,93 @@ router.post("/", async (req, res) => {
     res.status(500).json({
       error: "Error al crear cliente"
     });
+  }
+});
+
+// ACTUALIZAR CLIENTE
+router.put("/:id", verificarToken, async (req, res) => {
+  const { id } = req.params;
+
+  const {
+    nombre,
+    apellido,
+    rut,
+    direccion,
+    ciudad_id,
+    dia_id,
+    telefono
+  } = req.body;
+
+  try {
+
+    if (!nombre || !apellido || !rut || !dia_id) {
+      return res.status(400).json({
+        error: "Faltan datos obligatorios"
+      });
+    }
+
+    const existe = await pool.query(
+      "SELECT * FROM clientes WHERE rut = $1 AND id != $2",
+      [rut, id]
+    );
+
+    if (existe.rows.length > 0) {
+      return res.status(400).json({
+        error: "Ya existe otro cliente con ese RUT"
+      });
+    }
+
+    const result = await pool.query(`
+      UPDATE clientes
+      SET nombre = $1,
+          apellido = $2,
+          rut = $3,
+          direccion = $4,
+          ciudad_id = $5,
+          dia_id = $6,
+          telefono = $7
+      WHERE id = $8
+      RETURNING *
+    `, [
+      nombre,
+      apellido,
+      rut,
+      direccion,
+      ciudad_id,
+      dia_id,
+      telefono,
+      id
+    ]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Cliente no encontrado" });
+    }
+
+    res.json(result.rows[0]);
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error al actualizar cliente" });
+  }
+});
+
+// ACTIVAR / DESACTIVAR CLIENTE
+router.put("/:id/activo", verificarToken, async (req, res) => {
+  const { id } = req.params;
+  const { activo } = req.body;
+
+  try {
+
+    await pool.query(
+      "UPDATE clientes SET activo = $1 WHERE id = $2",
+      [activo, id]
+    );
+
+    res.json({ ok: true });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error al cambiar estado del cliente" });
   }
 });
 
