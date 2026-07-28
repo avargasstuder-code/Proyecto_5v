@@ -5,7 +5,7 @@ import { verificarToken } from "../middleware/auth.js";
 const router = Router();
 
 router.post("/", verificarToken, async (req, res) => {
-  const { cliente_id, productos, metodo_pago, dias_cheque } = req.body;
+  const { cliente_id, productos } = req.body;
   const usuario_id = req.user.id;
 
   const client = await pool.connect();
@@ -17,14 +17,6 @@ router.post("/", verificarToken, async (req, res) => {
 
   if (!productos || productos.length === 0) {
     return res.status(400).json({ error: "No hay productos en la venta" });
-  }
-
-  if (!metodo_pago) {
-    return res.status(400).json({ error: "Método de pago requerido" });
-  }
-
-  if (metodo_pago === "cheque" && (!dias_cheque || dias_cheque <= 0)) {
-    return res.status(400).json({ error: "Días de cheque inválidos" });
   }
 
   try {
@@ -95,17 +87,15 @@ router.post("/", verificarToken, async (req, res) => {
       });
     }
 
-    // 2. CREAR VENTA
+    // 2. CREAR VENTA (sin método de pago, se define después)
     const venta = await client.query(
       `INSERT INTO ventas 
       (cliente_id, usuario_id, total, metodo_pago, dias_cheque)
-      VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      VALUES ($1,$2,$3,NULL,NULL) RETURNING *`,
       [
         cliente_id,
         usuario_id,
-        total,
-        metodo_pago,
-        metodo_pago === "cheque" ? dias_cheque : null
+        total
       ]
     );
 
