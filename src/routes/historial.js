@@ -46,9 +46,14 @@ router.get("/:id", verificarToken, async (req, res) => {
 
   try {
     const venta = await pool.query(
-      `SELECT v.*, c.nombre || ' ' || c.apellido AS cliente, c.rut AS rut, u.nombre AS usuario
+      `SELECT v.*,
+              c.nombre || ' ' || c.apellido AS cliente,
+              c.rut AS rut,
+              ciu.nombre AS ciudad,
+              u.nombre AS usuario
        FROM ventas v
        JOIN clientes c ON v.cliente_id = c.id
+       LEFT JOIN ciudades ciu ON ciu.id = c.ciudad_id
        JOIN usuarios u ON v.usuario_id = u.id
        WHERE v.id = $1`,
       [id]
@@ -78,5 +83,4 @@ router.get("/:id", verificarToken, async (req, res) => {
 });
 
 
-// ESTO ES LO QUE TE FALTA
 export default router;
