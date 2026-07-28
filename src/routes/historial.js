@@ -17,6 +17,7 @@ router.get("/", verificarToken, async (req, res) => {
         v.dias_cheque,
         v.fecha,
         c.nombre || ' ' || c.apellido AS cliente,
+        c.rut AS rut,
         u.nombre AS usuario
       FROM ventas v
       JOIN clientes c ON v.cliente_id = c.id
