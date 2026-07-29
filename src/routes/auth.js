@@ -8,28 +8,30 @@ import { verificarAdmin } from "../middleware/verificarAdmin.js";
 const router = Router();
 const SECRET = process.env.JWT_SECRET;
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const esPasswordSegura = (password) =>
+  typeof password === "string" &&
+  password.length >= 8 &&
+  /[A-Z]/.test(password) &&
+  /[a-z]/.test(password) &&
+  /[0-9]/.test(password);
+
 // REGISTRAR USUARIO
 router.post("/register", verificarToken, verificarAdmin, async (req, res) => {
+  try {
     const { nombre, password, rol } = req.body;
     const email = req.body.email?.toLowerCase();
 
-    // VALIDAR EMAIL
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({
-        error: "Correo inválido"
-      });
+    if (!nombre || typeof nombre !== "string" || !nombre.trim()) {
+      return res.status(400).json({ error: "Nombre es obligatorio" });
     }
 
-    // VALIDAR PASSWORD
-    const passwordSegura =
-      password.length >= 8 &&
-      /[A-Z]/.test(password) &&
-      /[a-z]/.test(password) &&
-      /[0-9]/.test(password);
+    if (!email || !EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: "Correo inválido" });
+    }
 
-    if (!passwordSegura) {
+    if (!esPasswordSegura(password)) {
       return res.status(400).json({
         error:
           "La contraseña debe tener mínimo 8 caracteres, mayúscula, minúscula y número"
@@ -37,7 +39,7 @@ router.post("/register", verificarToken, verificarAdmin, async (req, res) => {
     }
 
     const existe = await pool.query(
-      "SELECT * FROM usuarios WHERE email = $1",
+      "SELECT id FROM usuarios WHERE email = $1",
       [email]
     );
 
@@ -53,51 +55,66 @@ router.post("/register", verificarToken, verificarAdmin, async (req, res) => {
       `INSERT INTO usuarios (nombre, email, password, rol)
        VALUES ($1,$2,$3,$4)
        RETURNING id, nombre, email, rol`,
-      [nombre, email, hash, rol || "vendedor"]
+      [nombre.trim(), email, hash, rol || "vendedor"]
     );
 
     res.json(result.rows[0]);
+
+  } catch (error) {
+    console.error("ERROR REGISTER:", error);
+    res.status(500).json({ error: "Error al registrar usuario" });
+  }
 });
 
 // LOGIN
 router.post("/login", async (req, res) => {
-  const email = req.body.email?.toLowerCase(); 
-  const { password } = req.body;
+  try {
+    const email = req.body.email?.toLowerCase();
+    const { password } = req.body;
 
-  const result = await pool.query(
-    "SELECT * FROM usuarios WHERE email = $1",
-    [email]
-  );
+    if (!email || !password) {
+      return res.status(400).json({ error: "Credenciales inválidas" });
+    }
 
-  const user = result.rows[0];
+    const result = await pool.query(
+      "SELECT * FROM usuarios WHERE email = $1",
+      [email]
+    );
 
-  if (!user) {
-    return res.status(400).json({ error: "Usuario no existe" });
+    const user = result.rows[0];
+
+    // Mensaje genérico en ambos casos (usuario no existe / contraseña incorrecta)
+    // para no revelar si un email está o no registrado en el sistema
+    if (!user) {
+      return res.status(400).json({ error: "Credenciales inválidas" });
+    }
+
+    if (!user.activo) {
+      return res.status(403).json({ error: "Cuenta desactivada" });
+    }
+
+    const valid = await bcrypt.compare(password, user.password);
+
+    if (!valid) {
+      return res.status(400).json({ error: "Credenciales inválidas" });
+    }
+
+    const token = jwt.sign(
+      {
+        id: user.id,
+        nombre: user.nombre,
+        rol: user.rol
+      },
+      SECRET,
+      { expiresIn: "8h" }
+    );
+
+    res.json({ token });
+
+  } catch (error) {
+    console.error("ERROR LOGIN:", error);
+    res.status(500).json({ error: "Error al iniciar sesión" });
   }
-  if (!user.activo) {
-    return res.status(403).json({
-      error: "Cuenta desactivada"
-    });
-  }
-
-  // comparar contraseña encriptada
-  const valid = await bcrypt.compare(password, user.password);
-
-  if (!valid) {
-    return res.status(400).json({ error: "Contraseña incorrecta" });
-  }
-
-  // generar token
-  const token = jwt.sign(
-    {
-      id: user.id,
-      nombre: user.nombre,
-      rol: user.rol
-    },
-    SECRET,
-    { expiresIn: "8h" }
-  );
-  res.json({ token });
 });
 
 // LISTAR USUARIOS
@@ -106,14 +123,19 @@ router.get(
   verificarToken,
   verificarAdmin,
   async (req, res) => {
+    try {
+      const result = await pool.query(`
+        SELECT id, nombre, email, rol, activo
+        FROM usuarios
+        ORDER BY id DESC
+      `);
 
-    const result = await pool.query(`
-      SELECT id, nombre, email, rol, activo
-      FROM usuarios
-      ORDER BY id DESC
-    `);
+      res.json(result.rows);
 
-    res.json(result.rows);
+    } catch (error) {
+      console.error("ERROR LISTAR USUARIOS:", error);
+      res.status(500).json({ error: "Error al obtener usuarios" });
+    }
 });
 
 // ACTIVAR / DESACTIVAR
@@ -122,25 +144,32 @@ router.put(
   verificarToken,
   verificarAdmin,
   async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { activo } = req.body;
 
-    const { id } = req.params;
-    const { activo } = req.body;
+      if (isNaN(Number(id))) {
+        return res.status(400).json({ error: "ID inválido" });
+      }
 
-    // impedir desactivarse a sí mismo
-    if (Number(id) === req.user.id) {
-      return res.status(400).json({
-        error: "No puedes desactivar tu propia cuenta"
-      });
+      // impedir desactivarse a sí mismo
+      if (Number(id) === req.user.id) {
+        return res.status(400).json({
+          error: "No puedes desactivar tu propia cuenta"
+        });
+      }
+
+      await pool.query(
+        "UPDATE usuarios SET activo = $1 WHERE id = $2",
+        [!!activo, id]
+      );
+
+      res.json({ ok: true });
+
+    } catch (error) {
+      console.error("ERROR ACTIVAR/DESACTIVAR:", error);
+      res.status(500).json({ error: "Error al cambiar el estado del usuario" });
     }
-
-    await pool.query(
-      "UPDATE usuarios SET activo = $1 WHERE id = $2",
-      [activo, id]
-    );
-
-    res.json({
-      ok: true
-    });
 });
 
 // CAMBIAR CONTRASEÑA
@@ -148,48 +177,83 @@ router.put(
   "/cambiar-password",
   verificarToken,
   async (req, res) => {
+    try {
+      const { actual, nueva } = req.body;
 
-    const { actual, nueva } = req.body;
+      if (!actual || !nueva) {
+        return res.status(400).json({ error: "Faltan datos" });
+      }
 
-    const result = await pool.query(
-      "SELECT * FROM usuarios WHERE id = $1",
-      [req.user.id]
-    );
+      if (!esPasswordSegura(nueva)) {
+        return res.status(400).json({
+          error:
+            "La nueva contraseña debe tener mínimo 8 caracteres, mayúscula, minúscula y número"
+        });
+      }
 
-    const user = result.rows[0];
+      const result = await pool.query(
+        "SELECT * FROM usuarios WHERE id = $1",
+        [req.user.id]
+      );
 
-    const valid = await bcrypt.compare(actual, user.password);
+      const user = result.rows[0];
 
-    if (!valid) {
-      return res.status(400).json({
-        error: "Contraseña actual incorrecta"
-      });
+      if (!user) {
+        return res.status(404).json({ error: "Usuario no encontrado" });
+      }
+
+      const valid = await bcrypt.compare(actual, user.password);
+
+      if (!valid) {
+        return res.status(400).json({
+          error: "Contraseña actual incorrecta"
+        });
+      }
+
+      const hash = await bcrypt.hash(nueva, 10);
+
+      await pool.query(
+        "UPDATE usuarios SET password = $1 WHERE id = $2",
+        [hash, req.user.id]
+      );
+
+      res.json({ ok: true });
+
+    } catch (error) {
+      console.error("ERROR CAMBIAR PASSWORD:", error);
+      res.status(500).json({ error: "Error al cambiar la contraseña" });
     }
-
-    const hash = await bcrypt.hash(nueva, 10);
-
-    await pool.query(
-      "UPDATE usuarios SET password = $1 WHERE id = $2",
-      [hash, req.user.id]
-    );
-
-    res.json({
-      ok: true
-    });
 });
 
 // CAMBIAR CORREO
 router.put("/cambiar-email", verificarToken, async (req, res) => {
-  const email = req.body.email?.toLowerCase();
+  try {
+    const email = req.body.email?.toLowerCase();
+
+    if (!email || !EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: "Correo inválido" });
+    }
+
+    const existe = await pool.query(
+      "SELECT id FROM usuarios WHERE email = $1 AND id != $2",
+      [email, req.user.id]
+    );
+
+    if (existe.rows.length > 0) {
+      return res.status(400).json({ error: "Ese correo ya está en uso" });
+    }
 
     await pool.query(
       "UPDATE usuarios SET email = $1 WHERE id = $2",
       [email, req.user.id]
     );
 
-    res.json({
-      ok: true
-    });
+    res.json({ ok: true });
+
+  } catch (error) {
+    console.error("ERROR CAMBIAR EMAIL:", error);
+    res.status(500).json({ error: "Error al cambiar el correo" });
+  }
 });
 
 export default router;

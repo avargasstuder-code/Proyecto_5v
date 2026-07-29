@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { pool } from "../db.js";
+import { verificarToken } from "../middleware/auth.js";
 
 const router = Router();
 
 // OBTENER PRODUCTOS
-router.get("/", async (req, res) => {
+router.get("/", verificarToken, async (req, res) => {
   try {
     const { codigo } = req.query;
 
@@ -29,7 +30,7 @@ router.get("/", async (req, res) => {
 });
 
 // CREAR PRODUCTO
-router.post("/", async (req, res) => {
+router.post("/", verificarToken, async (req, res) => {
   try {
     const {
       nombre,
@@ -43,10 +44,20 @@ router.post("/", async (req, res) => {
     } = req.body;
 
     // VALIDACIÓN BÁSICA
-    if (!nombre || !tipo_venta) {
-      return res.status(400).json({
-        error: "Nombre y tipo de venta son obligatorios"
-      });
+    if (!nombre || typeof nombre !== "string" || !nombre.trim()) {
+      return res.status(400).json({ error: "Nombre es obligatorio" });
+    }
+
+    if (!tipo_venta || !["cigarro", "unitario"].includes(tipo_venta)) {
+      return res.status(400).json({ error: "Tipo de venta inválido" });
+    }
+
+    if (stock !== undefined && (isNaN(Number(stock)) || Number(stock) < 0)) {
+      return res.status(400).json({ error: "Stock inválido" });
+    }
+
+    if (categoria_id !== undefined && categoria_id !== null && isNaN(Number(categoria_id))) {
+      return res.status(400).json({ error: "Categoría inválida" });
     }
 
     // VALIDAR DUPLICADO (ANTES)
@@ -69,7 +80,7 @@ router.post("/", async (req, res) => {
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
       RETURNING *`,
       [
-        nombre,
+        nombre.trim(),
         codigo_barra || null,
         stock || 0,
         categoria_id || null,
@@ -95,8 +106,12 @@ router.post("/", async (req, res) => {
 });
 
 // DESACTIVAR PRODUCTO
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", verificarToken, async (req, res) => {
   const { id } = req.params;
+
+  if (isNaN(Number(id))) {
+    return res.status(400).json({ error: "ID inválido" });
+  }
 
   try {
     await pool.query(
@@ -113,8 +128,12 @@ router.delete("/:id", async (req, res) => {
 });
 
 // ACTUALIZAR PRODUCTO
-router.put("/:id", async (req, res) => {
+router.put("/:id", verificarToken, async (req, res) => {
   const { id } = req.params;
+
+  if (isNaN(Number(id))) {
+    return res.status(400).json({ error: "ID inválido" });
+  }
 
   const {
     nombre,
@@ -126,6 +145,14 @@ router.put("/:id", async (req, res) => {
     precio_unitario,
     tipo_venta
   } = req.body;
+
+  if (!nombre || typeof nombre !== "string" || !nombre.trim()) {
+    return res.status(400).json({ error: "Nombre es obligatorio" });
+  }
+
+  if (!tipo_venta || !["cigarro", "unitario"].includes(tipo_venta)) {
+    return res.status(400).json({ error: "Tipo de venta inválido" });
+  }
 
   try {
     // VALIDAR DUPLICADO (EXCLUYENDO EL MISMO ID)
@@ -154,7 +181,7 @@ router.put("/:id", async (req, res) => {
         precio_medio = $8
       WHERE id = $9`,
       [
-        nombre,
+        nombre.trim(),
         codigo_barra || null,
         stock,
         categoria_id,

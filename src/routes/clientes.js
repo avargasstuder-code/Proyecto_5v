@@ -4,6 +4,22 @@ import { verificarToken } from "../middleware/auth.js";
 
 const router = Router();
 
+// Helper: valida que un valor sea un entero positivo
+function esEnteroValido(valor) {
+  const n = Number(valor);
+  return Number.isInteger(n) && n > 0;
+}
+
+// Helper: verifica que el cliente exista y, si el usuario es vendedor,
+// que le pertenezca. Devuelve el cliente o null.
+async function obtenerClienteAutorizado(clienteId, user) {
+  const result = await pool.query("SELECT * FROM clientes WHERE id = $1", [clienteId]);
+  const cliente = result.rows[0];
+  if (!cliente) return null;
+  if (user.rol === "vendedor" && cliente.usuario_id !== user.id) return null;
+  return cliente;
+}
+
 // OBTENER CLIENTES (vista por día - solo activos, filtrados por vendedor)
 router.get("/", verificarToken, async (req, res) => {
   try {
@@ -90,6 +106,14 @@ router.post("/", verificarToken, async (req, res) => {
       });
     }
 
+    if (!esEnteroValido(dia_id)) {
+      return res.status(400).json({ error: "dia_id inválido" });
+    }
+
+    if (ciudad_id !== undefined && ciudad_id !== null && !esEnteroValido(ciudad_id)) {
+      return res.status(400).json({ error: "ciudad_id inválido" });
+    }
+
     const existe = await pool.query(
       "SELECT * FROM clientes WHERE rut = $1",
       [rut]
@@ -155,10 +179,28 @@ router.put("/:id", verificarToken, async (req, res) => {
 
   try {
 
+    if (!esEnteroValido(id)) {
+      return res.status(400).json({ error: "id inválido" });
+    }
+
     if (!nombre || !apellido || !rut || !dia_id) {
       return res.status(400).json({
         error: "Faltan datos obligatorios"
       });
+    }
+
+    if (!esEnteroValido(dia_id)) {
+      return res.status(400).json({ error: "dia_id inválido" });
+    }
+
+    if (ciudad_id !== undefined && ciudad_id !== null && !esEnteroValido(ciudad_id)) {
+      return res.status(400).json({ error: "ciudad_id inválido" });
+    }
+
+    // Control de propiedad: un vendedor solo puede editar sus propios clientes
+    const clienteAutorizado = await obtenerClienteAutorizado(id, req.user);
+    if (!clienteAutorizado) {
+      return res.status(404).json({ error: "Cliente no encontrado" });
     }
 
     const existe = await pool.query(
@@ -213,6 +255,20 @@ router.put("/:id/activo", verificarToken, async (req, res) => {
 
   try {
 
+    if (!esEnteroValido(id)) {
+      return res.status(400).json({ error: "id inválido" });
+    }
+
+    if (typeof activo !== "boolean") {
+      return res.status(400).json({ error: "activo debe ser true o false" });
+    }
+
+    // Control de propiedad: un vendedor solo puede (des)activar sus propios clientes
+    const clienteAutorizado = await obtenerClienteAutorizado(id, req.user);
+    if (!clienteAutorizado) {
+      return res.status(404).json({ error: "Cliente no encontrado" });
+    }
+
     await pool.query(
       "UPDATE clientes SET activo = $1 WHERE id = $2",
       [activo, id]
@@ -227,41 +283,69 @@ router.put("/:id/activo", verificarToken, async (req, res) => {
 });
 
 // PRODUCTOS FRECUENTES
-router.get("/frecuentes/:cliente_id", async (req, res) => {
+router.get("/frecuentes/:cliente_id", verificarToken, async (req, res) => {
 
   const { cliente_id } = req.params;
 
-  const result = await pool.query(`
-    SELECT
-      p.id,
-      p.nombre,
-      f.cantidad_frecuente
-    FROM cliente_productos_frecuentes f
-    JOIN productos p
-      ON p.id = f.producto_id
-    WHERE f.cliente_id = $1
-  `, [cliente_id]);
+  if (!esEnteroValido(cliente_id)) {
+    return res.status(400).json({ error: "cliente_id inválido" });
+  }
 
-  res.json(result.rows);
+  try {
+    const clienteAutorizado = await obtenerClienteAutorizado(cliente_id, req.user);
+    if (!clienteAutorizado) {
+      return res.status(404).json({ error: "Cliente no encontrado" });
+    }
+
+    const result = await pool.query(`
+      SELECT
+        p.id,
+        p.nombre,
+        f.cantidad_frecuente
+      FROM cliente_productos_frecuentes f
+      JOIN productos p
+        ON p.id = f.producto_id
+      WHERE f.cliente_id = $1
+    `, [cliente_id]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error al obtener productos frecuentes" });
+  }
 });
 
 // STOCK CLIENTE
-router.get("/stock/:cliente_id", async (req, res) => {
+router.get("/stock/:cliente_id", verificarToken, async (req, res) => {
 
   const { cliente_id } = req.params;
 
-  const result = await pool.query(`
-    SELECT
-      p.id,
-      p.nombre,
-      cs.stock
-    FROM cliente_stock cs
-    JOIN productos p
-      ON p.id = cs.producto_id
-    WHERE cs.cliente_id = $1
-  `, [cliente_id]);
+  if (!esEnteroValido(cliente_id)) {
+    return res.status(400).json({ error: "cliente_id inválido" });
+  }
 
-  res.json(result.rows);
+  try {
+    const clienteAutorizado = await obtenerClienteAutorizado(cliente_id, req.user);
+    if (!clienteAutorizado) {
+      return res.status(404).json({ error: "Cliente no encontrado" });
+    }
+
+    const result = await pool.query(`
+      SELECT
+        p.id,
+        p.nombre,
+        cs.stock
+      FROM cliente_stock cs
+      JOIN productos p
+        ON p.id = cs.producto_id
+      WHERE cs.cliente_id = $1
+    `, [cliente_id]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error al obtener stock del cliente" });
+  }
 });
 
 // GUARDAR STOCK ACTUAL
@@ -276,13 +360,25 @@ router.post(
       stock_actual
     } = req.body;
 
-    if (stock_actual < 0) {
+    if (!esEnteroValido(cliente_id) || !esEnteroValido(producto_id)) {
+      return res.status(400).json({ error: "cliente_id o producto_id inválido" });
+    }
+
+    const stockNum = Number(stock_actual);
+    if (!Number.isFinite(stockNum) || stockNum < 0) {
       return res.status(400).json({
         error: "Stock inválido"
       });
     }
 
     try {
+
+      // Control de propiedad: un vendedor solo puede reportar stock
+      // de sus propios clientes
+      const clienteAutorizado = await obtenerClienteAutorizado(cliente_id, req.user);
+      if (!clienteAutorizado) {
+        return res.status(404).json({ error: "Cliente no encontrado" });
+      }
 
       // verificar si existe
       const existe = await pool.query(`
@@ -304,7 +400,7 @@ router.post(
           WHERE cliente_id = $2
           AND producto_id = $3
         `, [
-          stock_actual,
+          stockNum,
           cliente_id,
           producto_id
         ]);
@@ -323,7 +419,7 @@ router.post(
         `, [
           cliente_id,
           producto_id,
-          stock_actual
+          stockNum
         ]);
       }
 
@@ -339,7 +435,7 @@ router.post(
       `, [
         cliente_id,
         producto_id,
-        stock_actual
+        stockNum
       ]);
 
       res.json({
@@ -357,58 +453,91 @@ router.post(
 });
 
 // ÚLTIMAS VENTAS
-router.get("/ultimas-ventas/:cliente_id", async (req, res) => {
+router.get("/ultimas-ventas/:cliente_id", verificarToken, async (req, res) => {
 
   const { cliente_id } = req.params;
 
-  const result = await pool.query(`
-    SELECT
-      id,
-      total,
-      fecha
-    FROM ventas
-    WHERE cliente_id = $1
-    ORDER BY fecha DESC
-    LIMIT 3
-  `, [cliente_id]);
+  if (!esEnteroValido(cliente_id)) {
+    return res.status(400).json({ error: "cliente_id inválido" });
+  }
 
-  res.json(result.rows);
+  try {
+    const clienteAutorizado = await obtenerClienteAutorizado(cliente_id, req.user);
+    if (!clienteAutorizado) {
+      return res.status(404).json({ error: "Cliente no encontrado" });
+    }
+
+    const result = await pool.query(`
+      SELECT
+        id,
+        total,
+        fecha
+      FROM ventas
+      WHERE cliente_id = $1
+      ORDER BY fecha DESC
+      LIMIT 3
+    `, [cliente_id]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error al obtener últimas ventas" });
+  }
 });
 
 // DÍAS
-router.get("/dias", async (req, res) => {
+router.get("/dias", verificarToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM dias_visita
+      ORDER BY id
+    `);
 
-  const result = await pool.query(`
-    SELECT *
-    FROM dias_visita
-    ORDER BY id
-  `);
-
-  res.json(result.rows);
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error al obtener días" });
+  }
 });
 
 // ÚLTIMOS STOCKS
 router.get(
   "/ultimos-stocks/:clienteId",
+  verificarToken,
   async (req, res) => {
 
     const { clienteId } = req.params;
 
-    const result = await pool.query(`
-      SELECT
-        h.producto_id,
-        h.stock_actual,
-        h.fecha,
-        p.nombre
-      FROM historial_stock_cliente h
-      JOIN productos p
-        ON p.id = h.producto_id
-      WHERE h.cliente_id = $1
-      ORDER BY h.fecha DESC
-      LIMIT 50
-    `, [clienteId]);
+    if (!esEnteroValido(clienteId)) {
+      return res.status(400).json({ error: "clienteId inválido" });
+    }
 
-    res.json(result.rows);
+    try {
+      const clienteAutorizado = await obtenerClienteAutorizado(clienteId, req.user);
+      if (!clienteAutorizado) {
+        return res.status(404).json({ error: "Cliente no encontrado" });
+      }
+
+      const result = await pool.query(`
+        SELECT
+          h.producto_id,
+          h.stock_actual,
+          h.fecha,
+          p.nombre
+        FROM historial_stock_cliente h
+        JOIN productos p
+          ON p.id = h.producto_id
+        WHERE h.cliente_id = $1
+        ORDER BY h.fecha DESC
+        LIMIT 50
+      `, [clienteId]);
+
+      res.json(result.rows);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Error al obtener últimos stocks" });
+    }
   }
 );
 
