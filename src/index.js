@@ -83,10 +83,9 @@ app.use("/api/auth", authRoutes);
 app.use("/api/historial", historialRoutes);
 app.use("/api/ciudades", ciudadesRoutes);
 app.use("/api/categorias", categoriasRoutes);
-app.use(express.static(path.join(__dirname, "../../frontend/dist")));
 
-app.get("/{*path}", (req, res) => {
-  res.sendFile(path.join(__dirname, "../../frontend/dist/index.html"));
+app.use((req, res) => {
+  res.status(404).json({ error: "Ruta no encontrada" });
 });
 
 // MANEJADOR DE ERRORES GLOBAL: cualquier error no capturado en una ruta
