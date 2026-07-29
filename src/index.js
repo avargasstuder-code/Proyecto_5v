@@ -1,7 +1,5 @@
 import dotenv from "dotenv";
 dotenv.config();
-import path from "path";
-import { fileURLToPath } from "url";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -15,8 +13,6 @@ import ciudadesRoutes from "./routes/ciudades.js";
 import categoriasRoutes from "./routes/categorias.js";
 
 const app = express();
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Verificación temprana: si falta alguna variable de entorno crítica,
 // mejor que el servidor no arranque en silencio con un bug difícil de rastrear
