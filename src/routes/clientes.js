@@ -541,4 +541,54 @@ router.get(
   }
 );
 
+// DEUDA PENDIENTE DE UN CLIENTE (cheques o créditos aún no cobrados)
+// Se usa antes de venderle, para avisarle al vendedor que tiene algo pendiente.
+router.get("/:id/deuda", verificarToken, async (req, res) => {
+  const { id } = req.params;
+
+  if (!esEnteroValido(id)) {
+    return res.status(400).json({ error: "id inválido" });
+  }
+
+  try {
+    const clienteAutorizado = await obtenerClienteAutorizado(id, req.user);
+    if (!clienteAutorizado) {
+      return res.status(404).json({ error: "Cliente no encontrado" });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        total,
+        metodo_pago,
+        dias_cheque,
+        fecha,
+        (fecha::date + (dias_cheque || ' days')::interval)::date AS vencimiento
+      FROM ventas
+      WHERE cliente_id = $1
+        AND estado_pago = 'pendiente'
+        AND metodo_pago IN ('cheque', 'credito')
+      ORDER BY fecha ASC
+      `,
+      [id]
+    );
+
+    const hoy = new Date().toISOString().slice(0, 10);
+
+    const deudas = result.rows.map(r => ({
+      ...r,
+      vencido: r.vencimiento < hoy
+    }));
+
+    res.json({
+      tieneDeuda: deudas.length > 0,
+      deudas
+    });
+  } catch (error) {
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudo consultar la deuda del cliente" });
+  }
+});
+
 export default router;

@@ -195,4 +195,180 @@ router.get("/frecuentes/:cliente_id", verificarToken, async (req, res) => {
   }
 });
 
+const METODOS_PAGO_VALIDOS = ["efectivo", "transferencia", "deposito", "cheque", "credito"];
+const REGEX_FECHA = /^\d{4}-\d{2}-\d{2}$/;
+
+// Helper: valida que un id venga como entero positivo
+function esEnteroValido(valor) {
+  const n = Number(valor);
+  return Number.isInteger(n) && n > 0;
+}
+
+// LISTAR VENTAS DE UN DÍA (para el panel de "Cierre del día")
+// Un vendedor solo ve las suyas; otros roles (ej. admin) ven todas.
+router.get("/del-dia", verificarToken, async (req, res) => {
+  const fecha = req.query.fecha || new Date().toISOString().slice(0, 10);
+
+  if (!REGEX_FECHA.test(fecha)) {
+    return res.status(400).json({ error: "Fecha inválida, formato esperado YYYY-MM-DD" });
+  }
+
+  try {
+    const params = [fecha];
+    let query = `
+      SELECT v.id, v.total, v.metodo_pago, v.dias_cheque, v.estado_pago, v.fecha,
+             c.nombre AS cliente_nombre, c.apellido AS cliente_apellido
+      FROM ventas v
+      JOIN clientes c ON c.id = v.cliente_id
+      WHERE v.fecha::date = $1::date
+    `;
+
+    if (req.user.rol === "vendedor") {
+      params.push(req.user.id);
+      query += ` AND v.usuario_id = $${params.length}`;
+    }
+
+    query += " ORDER BY v.fecha ASC";
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (error) {
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudieron obtener las ventas del día" });
+  }
+});
+
+// DEFINIR / ACTUALIZAR EL MÉTODO DE PAGO DE UNA VENTA
+router.put("/:id/metodo-pago", verificarToken, async (req, res) => {
+  const { id } = req.params;
+  const { metodo_pago, dias } = req.body;
+
+  if (!esEnteroValido(id)) {
+    return res.status(400).json({ error: "id inválido" });
+  }
+
+  if (!METODOS_PAGO_VALIDOS.includes(metodo_pago)) {
+    return res.status(400).json({ error: "Método de pago inválido" });
+  }
+
+  const requierePlazo = metodo_pago === "cheque" || metodo_pago === "credito";
+  let diasPlazo = null;
+
+  if (requierePlazo) {
+    diasPlazo = Number(dias);
+    if (!Number.isInteger(diasPlazo) || diasPlazo <= 0) {
+      return res.status(400).json({ error: "Debes indicar los días de plazo (mayor a 0)" });
+    }
+  }
+
+  try {
+    const ventaResult = await pool.query("SELECT * FROM ventas WHERE id = $1", [id]);
+    const venta = ventaResult.rows[0];
+
+    if (!venta) {
+      return res.status(404).json({ error: "Venta no encontrada" });
+    }
+
+    // Un vendedor solo puede definir el método de pago de sus propias ventas
+    if (req.user.rol === "vendedor" && venta.usuario_id !== req.user.id) {
+      return res.status(404).json({ error: "Venta no encontrada" });
+    }
+
+    const estadoPago = requierePlazo ? "pendiente" : "pagado";
+    const fechaPago = requierePlazo ? null : new Date();
+
+    const result = await pool.query(
+      `
+      UPDATE ventas
+      SET metodo_pago = $1, dias_cheque = $2, estado_pago = $3, fecha_pago = $4
+      WHERE id = $5
+      RETURNING *
+      `,
+      [metodo_pago, diasPlazo, estadoPago, fechaPago, id]
+    );
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudo guardar el método de pago" });
+  }
+});
+
+// MARCAR UNA DEUDA (CHEQUE O CRÉDITO) COMO COBRADA
+router.put("/:id/marcar-pagado", verificarToken, async (req, res) => {
+  const { id } = req.params;
+
+  if (!esEnteroValido(id)) {
+    return res.status(400).json({ error: "id inválido" });
+  }
+
+  try {
+    const ventaResult = await pool.query("SELECT * FROM ventas WHERE id = $1", [id]);
+    const venta = ventaResult.rows[0];
+
+    if (!venta) {
+      return res.status(404).json({ error: "Venta no encontrada" });
+    }
+
+    if (req.user.rol === "vendedor" && venta.usuario_id !== req.user.id) {
+      return res.status(404).json({ error: "Venta no encontrada" });
+    }
+
+    if (venta.estado_pago !== "pendiente") {
+      return res.status(400).json({ error: "Esta venta no tiene un pago pendiente" });
+    }
+
+    const result = await pool.query(
+      `
+      UPDATE ventas
+      SET estado_pago = 'pagado', fecha_pago = NOW()
+      WHERE id = $1
+      RETURNING *
+      `,
+      [id]
+    );
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudo marcar como pagado" });
+  }
+});
+
+// RESUMEN DEL DÍA POR MÉTODO DE PAGO (para cuadrar caja)
+router.get("/resumen", verificarToken, async (req, res) => {
+  const fecha = req.query.fecha || new Date().toISOString().slice(0, 10);
+
+  if (!REGEX_FECHA.test(fecha)) {
+    return res.status(400).json({ error: "Fecha inválida, formato esperado YYYY-MM-DD" });
+  }
+
+  try {
+    const params = [fecha];
+    let query = `
+      SELECT
+        COALESCE(v.metodo_pago, 'sin_definir') AS metodo_pago,
+        COUNT(*)::int AS cantidad,
+        COALESCE(SUM(v.total), 0)::numeric AS total
+      FROM ventas v
+      WHERE v.fecha::date = $1::date
+    `;
+
+    if (req.user.rol === "vendedor") {
+      params.push(req.user.id);
+      query += ` AND v.usuario_id = $${params.length}`;
+    }
+
+    query += " GROUP BY COALESCE(v.metodo_pago, 'sin_definir') ORDER BY metodo_pago";
+
+    const result = await pool.query(query, params);
+    const totalGeneral = result.rows.reduce((acc, r) => acc + Number(r.total), 0);
+
+    res.json({ fecha, detalle: result.rows, totalGeneral });
+  } catch (error) {
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudo obtener el resumen del día" });
+  }
+});
+
 export default router;
