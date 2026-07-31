@@ -27,9 +27,18 @@ router.get("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
     const user = req.user;
 
     let query = `
-      SELECT c.*, d.nombre AS dia
+      SELECT
+        c.*,
+        d.nombre AS dia,
+        COALESCE(deuda.total_pendiente, 0) AS deuda_pendiente
       FROM clientes c
       JOIN dias_visita d ON d.id = c.dia_id
+      LEFT JOIN (
+        SELECT cliente_id, SUM(total - monto_pagado) AS total_pendiente
+        FROM ventas
+        WHERE estado_pago IN ('pendiente', 'parcial')
+        GROUP BY cliente_id
+      ) deuda ON deuda.cliente_id = c.id
       WHERE c.activo = true
     `;
     const params = [];
@@ -43,7 +52,12 @@ router.get("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    res.json(result.rows);
+    const clientes = result.rows.map(c => ({
+      ...c,
+      deuda_pendiente: Number(c.deuda_pendiente)
+    }));
+
+    res.json(clientes);
 
   } catch (error) {
     console.error(error);
