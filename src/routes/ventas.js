@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { pool } from "../db.js";
 import { verificarToken } from "../middleware/auth.js";
+import { verificarRol } from "../middleware/verificarRol.js";
 
 const router = Router();
 
-router.post("/", verificarToken, async (req, res) => {
+router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const { cliente_id, productos } = req.body;
   const usuario_id = req.user.id;
 
@@ -172,7 +173,7 @@ router.post("/", verificarToken, async (req, res) => {
 
 // Requiere autenticación: antes cualquiera podía consultar los
 // productos frecuentes de cualquier cliente sin loguearse.
-router.get("/frecuentes/:cliente_id", verificarToken, async (req, res) => {
+router.get("/frecuentes/:cliente_id", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const { cliente_id } = req.params;
 
   if (!Number.isInteger(Number(cliente_id))) {
@@ -208,7 +209,7 @@ function esEnteroValido(valor) {
 
 // LISTAR VENTAS DE UN DÍA (para el panel de "Cierre del día")
 // Un vendedor solo ve las suyas; otros roles (ej. admin) ven todas.
-router.get("/del-dia", verificarToken, async (req, res) => {
+router.get("/del-dia", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const fecha = req.query.fecha || new Date().toISOString().slice(0, 10);
 
   if (!REGEX_FECHA.test(fecha)) {
@@ -241,7 +242,7 @@ router.get("/del-dia", verificarToken, async (req, res) => {
 });
 
 // DEFINIR / ACTUALIZAR EL MÉTODO DE PAGO DE UNA VENTA
-router.put("/:id/metodo-pago", verificarToken, async (req, res) => {
+router.put("/:id/metodo-pago", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const { id } = req.params;
   const { metodo_pago, dias } = req.body;
 
@@ -298,7 +299,7 @@ router.put("/:id/metodo-pago", verificarToken, async (req, res) => {
 });
 
 // REGISTRAR UN ABONO (pago total o parcial) A UNA DEUDA (CHEQUE O CRÉDITO)
-router.post("/:id/abono", verificarToken, async (req, res) => {
+router.post("/:id/abono", verificarToken, verificarRol("admin", "vendedor"), async (req, res) => {
   const { id } = req.params;
   const { monto } = req.body;
 
@@ -382,7 +383,7 @@ router.post("/:id/abono", verificarToken, async (req, res) => {
 
 // PANEL DE DEUDORES: todos los clientes con saldo pendiente (cheque/crédito),
 // agrupados, con el detalle de cada deuda individual
-router.get("/deudores", verificarToken, async (req, res) => {
+router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async (req, res) => {
   try {
     const params = [];
     let query = `
@@ -456,7 +457,7 @@ router.get("/deudores", verificarToken, async (req, res) => {
 });
 
 // RESUMEN DEL DÍA POR MÉTODO DE PAGO (para cuadrar caja)
-router.get("/resumen", verificarToken, async (req, res) => {
+router.get("/resumen", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const fecha = req.query.fecha || new Date().toISOString().slice(0, 10);
 
   if (!REGEX_FECHA.test(fecha)) {

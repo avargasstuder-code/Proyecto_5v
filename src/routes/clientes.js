@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { pool } from "../db.js";
 import { verificarToken } from "../middleware/auth.js";
+import { verificarRol } from "../middleware/verificarRol.js";
 
 const router = Router();
 
@@ -10,8 +11,8 @@ function esEnteroValido(valor) {
   return Number.isInteger(n) && n > 0;
 }
 
-// Helper: verifica que el cliente exista y, si el usuario es vendedor,
-// que le pertenezca. Devuelve el cliente o null.
+// Helper: verifica que el cliente exista y, si el usuario tiene un rol
+// restringido por dueño, que le pertenezca. Devuelve el cliente o null.
 async function obtenerClienteAutorizado(clienteId, user) {
   const result = await pool.query("SELECT * FROM clientes WHERE id = $1", [clienteId]);
   const cliente = result.rows[0];
@@ -21,7 +22,7 @@ async function obtenerClienteAutorizado(clienteId, user) {
 }
 
 // OBTENER CLIENTES (vista por día - solo activos, filtrados por vendedor)
-router.get("/", verificarToken, async (req, res) => {
+router.get("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
   try {
     const user = req.user;
 
@@ -53,7 +54,7 @@ router.get("/", verificarToken, async (req, res) => {
 });
 
 // LISTADO COMPLETO (activos e inactivos, con ciudad y vendedor) - para editar/desactivar
-router.get("/todos", verificarToken, async (req, res) => {
+router.get("/todos", verificarToken, verificarRol("vendedor"), async (req, res) => {
   try {
     const user = req.user;
 
@@ -86,7 +87,7 @@ router.get("/todos", verificarToken, async (req, res) => {
 });
 
 // CREAR CLIENTE (queda asignado al usuario logueado)
-router.post("/", verificarToken, async (req, res) => {
+router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
   const {
     nombre,
@@ -164,7 +165,7 @@ router.post("/", verificarToken, async (req, res) => {
 });
 
 // ACTUALIZAR CLIENTE
-router.put("/:id", verificarToken, async (req, res) => {
+router.put("/:id", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const { id } = req.params;
 
   const {
@@ -249,7 +250,7 @@ router.put("/:id", verificarToken, async (req, res) => {
 });
 
 // ACTIVAR / DESACTIVAR CLIENTE
-router.put("/:id/activo", verificarToken, async (req, res) => {
+router.put("/:id/activo", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const { id } = req.params;
   const { activo } = req.body;
 
@@ -283,7 +284,7 @@ router.put("/:id/activo", verificarToken, async (req, res) => {
 });
 
 // PRODUCTOS FRECUENTES
-router.get("/frecuentes/:cliente_id", verificarToken, async (req, res) => {
+router.get("/frecuentes/:cliente_id", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
   const { cliente_id } = req.params;
 
@@ -316,7 +317,7 @@ router.get("/frecuentes/:cliente_id", verificarToken, async (req, res) => {
 });
 
 // STOCK CLIENTE
-router.get("/stock/:cliente_id", verificarToken, async (req, res) => {
+router.get("/stock/:cliente_id", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
   const { cliente_id } = req.params;
 
@@ -352,6 +353,7 @@ router.get("/stock/:cliente_id", verificarToken, async (req, res) => {
 router.post(
   "/stock-actual",
   verificarToken,
+  verificarRol("vendedor"),
   async (req, res) => {
 
     const {
@@ -453,7 +455,7 @@ router.post(
 });
 
 // ÚLTIMAS VENTAS
-router.get("/ultimas-ventas/:cliente_id", verificarToken, async (req, res) => {
+router.get("/ultimas-ventas/:cliente_id", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
   const { cliente_id } = req.params;
 
@@ -486,7 +488,7 @@ router.get("/ultimas-ventas/:cliente_id", verificarToken, async (req, res) => {
 });
 
 // DÍAS
-router.get("/dias", verificarToken, async (req, res) => {
+router.get("/dias", verificarToken, verificarRol("vendedor"), async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT *
@@ -505,6 +507,7 @@ router.get("/dias", verificarToken, async (req, res) => {
 router.get(
   "/ultimos-stocks/:clienteId",
   verificarToken,
+  verificarRol("vendedor"),
   async (req, res) => {
 
     const { clienteId } = req.params;
@@ -543,7 +546,7 @@ router.get(
 
 // DEUDA PENDIENTE DE UN CLIENTE (cheques o créditos aún no cobrados)
 // Se usa antes de venderle, para avisarle al vendedor que tiene algo pendiente.
-router.get("/:id/deuda", verificarToken, async (req, res) => {
+router.get("/:id/deuda", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const { id } = req.params;
 
   if (!esEnteroValido(id)) {

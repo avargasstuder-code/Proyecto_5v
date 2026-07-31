@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { pool } from "../db.js";
 import { verificarToken } from "../middleware/auth.js";
+import { verificarAdmin } from "../middleware/verificarAdmin.js";
 
 const router = Router();
 
-// OBTENER PRODUCTOS
+// OBTENER PRODUCTOS (lectura: la necesitan tanto el vendedor -para vender-
+// como el admin -para administrar-, así que no se restringe por rol)
 router.get("/", verificarToken, async (req, res) => {
   try {
     const { codigo } = req.query;
@@ -29,8 +31,8 @@ router.get("/", verificarToken, async (req, res) => {
   }
 });
 
-// CREAR PRODUCTO
-router.post("/", verificarToken, async (req, res) => {
+// CREAR PRODUCTO (solo admin)
+router.post("/", verificarToken, verificarAdmin, async (req, res) => {
   try {
     const {
       nombre,
@@ -105,8 +107,8 @@ router.post("/", verificarToken, async (req, res) => {
   }
 });
 
-// DESACTIVAR PRODUCTO
-router.delete("/:id", verificarToken, async (req, res) => {
+// DESACTIVAR PRODUCTO (solo admin)
+router.delete("/:id", verificarToken, verificarAdmin, async (req, res) => {
   const { id } = req.params;
 
   if (isNaN(Number(id))) {
@@ -127,8 +129,8 @@ router.delete("/:id", verificarToken, async (req, res) => {
   }
 });
 
-// ACTUALIZAR PRODUCTO
-router.put("/:id", verificarToken, async (req, res) => {
+// ACTUALIZAR PRODUCTO (solo admin)
+router.put("/:id", verificarToken, verificarAdmin, async (req, res) => {
   const { id } = req.params;
 
   if (isNaN(Number(id))) {
