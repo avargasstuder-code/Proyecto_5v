@@ -284,7 +284,7 @@ router.put("/:id/metodo-pago", verificarToken, verificarRol("vendedor"), async (
     const result = await pool.query(
       `
       UPDATE ventas
-      SET metodo_pago = $1, dias_cheque = $2, estado_pago = $3, fecha_pago = $4, fecha_metodo_pago = $5
+      SET metodo_pago = $1, dias_cheque = $2, estado_pago = $3, fecha_pago = $4, fecha_metodo_pago = $5, monto_pagado = 0
       WHERE id = $6
       RETURNING *
       `,
