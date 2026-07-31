@@ -29,7 +29,7 @@ router.post("/", verificarToken, async (req, res) => {
     ) {
       return res.status(400).json({ error: "cantidad debe ser un número positivo" });
     }
-    if (item.tipo !== undefined && !["carton", "medio"].includes(item.tipo)) {
+    if (item.tipo !== undefined && !["carton", "medio", "unidad"].includes(item.tipo)) {
       return res.status(400).json({ error: "Tipo de unidad inválido" });
     }
   }
@@ -65,7 +65,9 @@ router.post("/", verificarToken, async (req, res) => {
       let descuentoStock = 0;
 
       // UNITARIO
-      if (producto.tipo_venta === "unitario") {
+      const tipoVentaNormalizado = (producto.tipo_venta || "").trim().toLowerCase();
+
+      if (tipoVentaNormalizado === "unitario") {
         precio = producto.precio_unitario;
         descuentoStock = item.cantidad;
       }
