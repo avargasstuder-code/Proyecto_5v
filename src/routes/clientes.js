@@ -567,7 +567,7 @@ router.get("/:id/deuda", verificarToken, async (req, res) => {
         dias_cheque,
         estado_pago,
         fecha,
-        (fecha::date + (dias_cheque || ' days')::interval)::date AS vencimiento
+        to_char(fecha::date + (dias_cheque || ' days')::interval, 'YYYY-MM-DD') AS vencimiento
       FROM ventas
       WHERE cliente_id = $1
         AND estado_pago IN ('pendiente', 'parcial')
