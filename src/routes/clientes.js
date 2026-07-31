@@ -561,13 +561,16 @@ router.get("/:id/deuda", verificarToken, async (req, res) => {
       SELECT
         id,
         total,
+        monto_pagado,
+        (total - monto_pagado) AS saldo,
         metodo_pago,
         dias_cheque,
+        estado_pago,
         fecha,
         (fecha::date + (dias_cheque || ' days')::interval)::date AS vencimiento
       FROM ventas
       WHERE cliente_id = $1
-        AND estado_pago = 'pendiente'
+        AND estado_pago IN ('pendiente', 'parcial')
         AND metodo_pago IN ('cheque', 'credito')
       ORDER BY fecha ASC
       `,
@@ -578,6 +581,9 @@ router.get("/:id/deuda", verificarToken, async (req, res) => {
 
     const deudas = result.rows.map(r => ({
       ...r,
+      total: Number(r.total),
+      monto_pagado: Number(r.monto_pagado),
+      saldo: Number(r.saldo),
       vencido: r.vencimiento < hoy
     }));
 

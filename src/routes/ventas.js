@@ -294,44 +294,158 @@ router.put("/:id/metodo-pago", verificarToken, async (req, res) => {
   }
 });
 
-// MARCAR UNA DEUDA (CHEQUE O CRÉDITO) COMO COBRADA
-router.put("/:id/marcar-pagado", verificarToken, async (req, res) => {
+// REGISTRAR UN ABONO (pago total o parcial) A UNA DEUDA (CHEQUE O CRÉDITO)
+router.post("/:id/abono", verificarToken, async (req, res) => {
   const { id } = req.params;
+  const { monto } = req.body;
 
   if (!esEnteroValido(id)) {
     return res.status(400).json({ error: "id inválido" });
   }
 
+  const montoNum = Number(monto);
+  if (!Number.isFinite(montoNum) || montoNum <= 0) {
+    return res.status(400).json({ error: "El monto debe ser mayor a 0" });
+  }
+
+  const client = await pool.connect();
+
   try {
-    const ventaResult = await pool.query("SELECT * FROM ventas WHERE id = $1", [id]);
+    await client.query("BEGIN");
+
+    const ventaResult = await client.query(
+      "SELECT * FROM ventas WHERE id = $1 FOR UPDATE",
+      [id]
+    );
     const venta = ventaResult.rows[0];
 
     if (!venta) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Venta no encontrada" });
     }
 
     if (req.user.rol === "vendedor" && venta.usuario_id !== req.user.id) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Venta no encontrada" });
     }
 
-    if (venta.estado_pago !== "pendiente") {
-      return res.status(400).json({ error: "Esta venta no tiene un pago pendiente" });
+    if (!["cheque", "credito"].includes(venta.metodo_pago)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Esta venta no tiene una deuda asociada" });
     }
 
-    const result = await pool.query(
-      `
-      UPDATE ventas
-      SET estado_pago = 'pagado', fecha_pago = NOW()
-      WHERE id = $1
-      RETURNING *
-      `,
-      [id]
+    const saldoActual = Number(venta.total) - Number(venta.monto_pagado || 0);
+
+    // Margen de 1 peso por posibles redondeos
+    if (montoNum > saldoActual + 1) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: `El monto no puede ser mayor al saldo pendiente ($${Math.round(saldoActual)})`
+      });
+    }
+
+    await client.query(
+      "INSERT INTO abonos_deuda (venta_id, monto, usuario_id) VALUES ($1, $2, $3)",
+      [id, montoNum, req.user.id]
     );
 
+    const nuevoMontoPagado = Number(venta.monto_pagado || 0) + montoNum;
+    const quedaPendiente = Number(venta.total) - nuevoMontoPagado > 1;
+    const nuevoEstado = quedaPendiente
+      ? (nuevoMontoPagado > 0 ? "parcial" : "pendiente")
+      : "pagado";
+    const fechaPago = nuevoEstado === "pagado" ? new Date() : venta.fecha_pago;
+
+    const result = await client.query(
+      `
+      UPDATE ventas
+      SET monto_pagado = $1, estado_pago = $2, fecha_pago = $3
+      WHERE id = $4
+      RETURNING *
+      `,
+      [nuevoMontoPagado, nuevoEstado, fechaPago, id]
+    );
+
+    await client.query("COMMIT");
     res.json(result.rows[0]);
   } catch (error) {
+    await client.query("ROLLBACK");
     console.error("ERROR REAL:", error);
-    res.status(500).json({ error: "No se pudo marcar como pagado" });
+    res.status(500).json({ error: "No se pudo registrar el abono" });
+  } finally {
+    client.release();
+  }
+});
+
+// PANEL DE DEUDORES: todos los clientes con saldo pendiente (cheque/crédito),
+// agrupados, con el detalle de cada deuda individual
+router.get("/deudores", verificarToken, async (req, res) => {
+  try {
+    const params = [];
+    let query = `
+      SELECT
+        v.id AS venta_id,
+        v.cliente_id,
+        c.nombre AS cliente_nombre,
+        c.apellido AS cliente_apellido,
+        c.telefono,
+        v.total,
+        v.monto_pagado,
+        (v.total - v.monto_pagado) AS saldo,
+        v.metodo_pago,
+        v.dias_cheque,
+        v.estado_pago,
+        v.fecha,
+        (v.fecha::date + (v.dias_cheque || ' days')::interval)::date AS vencimiento
+      FROM ventas v
+      JOIN clientes c ON c.id = v.cliente_id
+      WHERE v.estado_pago IN ('pendiente', 'parcial')
+    `;
+
+    if (req.user.rol === "vendedor") {
+      params.push(req.user.id);
+      query += ` AND v.usuario_id = $${params.length}`;
+    }
+
+    query += " ORDER BY vencimiento ASC";
+
+    const result = await pool.query(query, params);
+    const hoy = new Date().toISOString().slice(0, 10);
+
+    // Agrupamos las deudas por cliente
+    const porCliente = {};
+    for (const row of result.rows) {
+      if (!porCliente[row.cliente_id]) {
+        porCliente[row.cliente_id] = {
+          cliente_id: row.cliente_id,
+          cliente_nombre: row.cliente_nombre,
+          cliente_apellido: row.cliente_apellido,
+          telefono: row.telefono,
+          deudaTotal: 0,
+          deudas: []
+        };
+      }
+
+      const saldo = Number(row.saldo);
+      porCliente[row.cliente_id].deudaTotal += saldo;
+      porCliente[row.cliente_id].deudas.push({
+        venta_id: row.venta_id,
+        total: Number(row.total),
+        monto_pagado: Number(row.monto_pagado),
+        saldo,
+        metodo_pago: row.metodo_pago,
+        dias_cheque: row.dias_cheque,
+        estado_pago: row.estado_pago,
+        fecha: row.fecha,
+        vencimiento: row.vencimiento,
+        vencido: row.vencimiento < hoy
+      });
+    }
+
+    res.json(Object.values(porCliente));
+  } catch (error) {
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudo obtener el listado de deudores" });
   }
 });
 
