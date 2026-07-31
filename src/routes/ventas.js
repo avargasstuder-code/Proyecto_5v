@@ -276,15 +276,16 @@ router.put("/:id/metodo-pago", verificarToken, async (req, res) => {
 
     const estadoPago = requierePlazo ? "pendiente" : "pagado";
     const fechaPago = requierePlazo ? null : new Date();
+    const fechaMetodoPago = new Date(); // desde acá empieza a correr el plazo del crédito/cheque
 
     const result = await pool.query(
       `
       UPDATE ventas
-      SET metodo_pago = $1, dias_cheque = $2, estado_pago = $3, fecha_pago = $4
-      WHERE id = $5
+      SET metodo_pago = $1, dias_cheque = $2, estado_pago = $3, fecha_pago = $4, fecha_metodo_pago = $5
+      WHERE id = $6
       RETURNING *
       `,
-      [metodo_pago, diasPlazo, estadoPago, fechaPago, id]
+      [metodo_pago, diasPlazo, estadoPago, fechaPago, fechaMetodoPago, id]
     );
 
     res.json(result.rows[0]);
@@ -396,7 +397,10 @@ router.get("/deudores", verificarToken, async (req, res) => {
         v.dias_cheque,
         v.estado_pago,
         v.fecha,
-        to_char(v.fecha::date + (v.dias_cheque || ' days')::interval, 'YYYY-MM-DD') AS vencimiento
+        to_char(
+          COALESCE(v.fecha_metodo_pago, v.fecha)::date + (v.dias_cheque || ' days')::interval,
+          'YYYY-MM-DD'
+        ) AS vencimiento
       FROM ventas v
       JOIN clientes c ON c.id = v.cliente_id
       WHERE v.estado_pago IN ('pendiente', 'parcial')
