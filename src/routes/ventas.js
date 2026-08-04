@@ -223,7 +223,7 @@ router.get("/del-dia", verificarToken, verificarRol("vendedor"), async (req, res
              c.nombre AS cliente_nombre, c.apellido AS cliente_apellido
       FROM ventas v
       JOIN clientes c ON c.id = v.cliente_id
-      WHERE v.fecha::date = $1::date
+      WHERE ((v.fecha AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date = $1::date
     `;
 
     if (req.user.rol === "vendedor") {
@@ -401,9 +401,13 @@ router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async
         v.estado_pago,
         v.fecha,
         to_char(
-          COALESCE(v.fecha_metodo_pago, v.fecha)::date + (v.dias_cheque || ' days')::interval,
+          ((COALESCE(v.fecha_metodo_pago, v.fecha) AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date + (v.dias_cheque || ' days')::interval,
           'YYYY-MM-DD'
-        ) AS vencimiento
+        ) AS vencimiento,
+        (
+          ((COALESCE(v.fecha_metodo_pago, v.fecha) AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date
+            + (v.dias_cheque || ' days')::interval
+        ) < (NOW() AT TIME ZONE 'America/Santiago')::date AS vencido
       FROM ventas v
       JOIN clientes c ON c.id = v.cliente_id
       WHERE v.estado_pago IN ('pendiente', 'parcial')
@@ -417,7 +421,6 @@ router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async
     query += " ORDER BY vencimiento ASC";
 
     const result = await pool.query(query, params);
-    const hoy = new Date().toISOString().slice(0, 10);
 
     // Agrupamos las deudas por cliente
     const porCliente = {};
@@ -445,7 +448,7 @@ router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async
         estado_pago: row.estado_pago,
         fecha: row.fecha,
         vencimiento: row.vencimiento,
-        vencido: row.vencimiento < hoy
+        vencido: row.vencido
       });
     }
 
@@ -472,7 +475,7 @@ router.get("/resumen", verificarToken, verificarRol("vendedor"), async (req, res
         COUNT(*)::int AS cantidad,
         COALESCE(SUM(v.total), 0)::numeric AS total
       FROM ventas v
-      WHERE v.fecha::date = $1::date
+      WHERE ((v.fecha AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date = $1::date
     `;
 
     if (req.user.rol === "vendedor") {

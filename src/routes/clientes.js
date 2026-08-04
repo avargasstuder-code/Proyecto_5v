@@ -585,9 +585,13 @@ router.get("/:id/deuda", verificarToken, verificarRol("vendedor"), async (req, r
         estado_pago,
         fecha,
         to_char(
-          COALESCE(fecha_metodo_pago, fecha)::date + (dias_cheque || ' days')::interval,
+          ((COALESCE(fecha_metodo_pago, fecha) AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date + (dias_cheque || ' days')::interval,
           'YYYY-MM-DD'
-        ) AS vencimiento
+        ) AS vencimiento,
+        (
+          ((COALESCE(fecha_metodo_pago, fecha) AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date
+            + (dias_cheque || ' days')::interval
+        ) < (NOW() AT TIME ZONE 'America/Santiago')::date AS vencido
       FROM ventas
       WHERE cliente_id = $1
         AND estado_pago IN ('pendiente', 'parcial')
@@ -597,14 +601,11 @@ router.get("/:id/deuda", verificarToken, verificarRol("vendedor"), async (req, r
       [id]
     );
 
-    const hoy = new Date().toISOString().slice(0, 10);
-
     const deudas = result.rows.map(r => ({
       ...r,
       total: Number(r.total),
       monto_pagado: Number(r.monto_pagado),
-      saldo: Number(r.saldo),
-      vencido: r.vencimiento < hoy
+      saldo: Number(r.saldo)
     }));
 
     res.json({
