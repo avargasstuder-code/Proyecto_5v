@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { pool } from "../db.js";
+import { verificarToken } from "../middleware/auth.js";
 
 const router = Router();
 
 // OBTENER TODAS LAS CATEGORÍAS
-router.get("/", async (req, res) => {
+router.get("/", verificarToken, async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM categoria");
     res.json(result.rows);
