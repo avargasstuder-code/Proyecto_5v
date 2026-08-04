@@ -11,6 +11,14 @@ function esEnteroValido(valor) {
   return Number.isInteger(n) && n > 0;
 }
 
+// Helper: valida formato de teléfono chileno (9 + 8 dígitos, ej: 912345678).
+// Vacío/no definido se permite, ya que el teléfono no es obligatorio.
+function esTelefonoValido(telefono) {
+  if (!telefono) return true;
+  const limpio = String(telefono).replace(/[\s-]/g, "");
+  return /^9\d{8}$/.test(limpio);
+}
+
 // Helper: verifica que el cliente exista y, si el usuario tiene un rol
 // restringido por dueño, que le pertenezca. Devuelve el cliente o null.
 async function obtenerClienteAutorizado(clienteId, user) {
@@ -129,6 +137,10 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
       return res.status(400).json({ error: "ciudad_id inválido" });
     }
 
+    if (!esTelefonoValido(telefono)) {
+      return res.status(400).json({ error: "Teléfono inválido. Formato esperado: 912345678" });
+    }
+
     const existe = await pool.query(
       "SELECT * FROM clientes WHERE rut = $1",
       [rut]
@@ -210,6 +222,10 @@ router.put("/:id", verificarToken, verificarRol("vendedor"), async (req, res) =>
 
     if (ciudad_id !== undefined && ciudad_id !== null && !esEnteroValido(ciudad_id)) {
       return res.status(400).json({ error: "ciudad_id inválido" });
+    }
+
+    if (!esTelefonoValido(telefono)) {
+      return res.status(400).json({ error: "Teléfono inválido. Formato esperado: 912345678" });
     }
 
     // Control de propiedad: un vendedor solo puede editar sus propios clientes

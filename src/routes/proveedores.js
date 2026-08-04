@@ -10,6 +10,14 @@ function esEnteroValido(valor) {
   return Number.isInteger(n) && n > 0;
 }
 
+// Valida formato de teléfono chileno (9 + 8 dígitos, ej: 912345678).
+// Vacío/no definido se permite, ya que el teléfono no es obligatorio.
+function esTelefonoValido(telefono) {
+  if (!telefono) return true;
+  const limpio = String(telefono).replace(/[\s-]/g, "");
+  return /^9\d{8}$/.test(limpio);
+}
+
 // LISTAR PROVEEDORES ACTIVOS (para elegir al registrar una compra)
 router.get("/", verificarToken, verificarAdmin, async (req, res) => {
   try {
@@ -42,6 +50,10 @@ router.post("/", verificarToken, verificarAdmin, async (req, res) => {
 
   if (!nombre || typeof nombre !== "string" || !nombre.trim()) {
     return res.status(400).json({ error: "El nombre es obligatorio" });
+  }
+
+  if (!esTelefonoValido(telefono)) {
+    return res.status(400).json({ error: "Teléfono inválido. Formato esperado: 912345678" });
   }
 
   try {
@@ -83,6 +95,10 @@ router.put("/:id", verificarToken, verificarAdmin, async (req, res) => {
 
   if (!nombre || typeof nombre !== "string" || !nombre.trim()) {
     return res.status(400).json({ error: "El nombre es obligatorio" });
+  }
+
+  if (!esTelefonoValido(telefono)) {
+    return res.status(400).json({ error: "Teléfono inválido. Formato esperado: 912345678" });
   }
 
   try {
