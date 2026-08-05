@@ -10,6 +10,10 @@ const SECRET = process.env.JWT_SECRET;
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Roles válidos del sistema. Si en el futuro agregás uno nuevo
+// (ej: "vendedor_repartidor"), sumalo acá también.
+const ROLES_VALIDOS = ["admin", "vendedor"];
+
 const esPasswordSegura = (password) =>
   typeof password === "string" &&
   password.length >= 8 &&
@@ -38,6 +42,11 @@ router.post("/register", verificarToken, verificarAdmin, async (req, res) => {
       });
     }
 
+    const rolFinal = rol || "vendedor";
+    if (!ROLES_VALIDOS.includes(rolFinal)) {
+      return res.status(400).json({ error: "Rol inválido" });
+    }
+
     const existe = await pool.query(
       "SELECT id FROM usuarios WHERE email = $1",
       [email]
@@ -55,7 +64,7 @@ router.post("/register", verificarToken, verificarAdmin, async (req, res) => {
       `INSERT INTO usuarios (nombre, email, password, rol)
        VALUES ($1,$2,$3,$4)
        RETURNING id, nombre, email, rol`,
-      [nombre.trim(), email, hash, rol || "vendedor"]
+      [nombre.trim(), email, hash, rolFinal]
     );
 
     res.json(result.rows[0]);
