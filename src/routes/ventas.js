@@ -33,6 +33,14 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
     if (item.tipo !== undefined && !["carton", "medio", "unidad"].includes(item.tipo)) {
       return res.status(400).json({ error: "Tipo de unidad inválido" });
     }
+    // Precio manual opcional: permite venderle a un cliente puntual a un
+    // precio distinto al del catálogo, sin tocar el precio del producto
+    if (item.precio !== undefined) {
+      const precioManual = Number(item.precio);
+      if (!Number.isFinite(precioManual) || precioManual < 0) {
+        return res.status(400).json({ error: "El precio manual debe ser un número mayor o igual a 0" });
+      }
+    }
   }
 
   // Recién ahora tomamos una conexión, ya validado el input
@@ -90,6 +98,13 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
       if (producto.stock < descuentoStock) {
         stockError = `Stock insuficiente para ${producto.nombre}`;
         break;
+      }
+
+      // Si viene un precio manual (venta con descuento para este
+      // cliente puntual), se usa ese en vez del precio de catálogo.
+      // El producto en sí no se modifica.
+      if (item.precio !== undefined) {
+        precio = Number(item.precio);
       }
 
       total += precio * item.cantidad;
