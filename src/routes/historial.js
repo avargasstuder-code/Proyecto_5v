@@ -79,7 +79,7 @@ function generarPdfTermico(res, venta, productos) {
   // más al final, lo cual no es un problema para una impresora térmica)
   const altoEstimado =
     mm(40) +               // cabecera (cliente, rut, fecha, etc.)
-    productos.length * mm(22) + // cada producto ocupa ~22mm
+    productos.length * mm(12) + // cada producto ocupa ~12mm (una fila, a veces dos si el nombre es largo)
     mm(25);                // total + pie de página
 
   const doc = new PDFDocument({
@@ -111,15 +111,43 @@ function generarPdfTermico(res, venta, productos) {
   doc.undash();
   doc.moveDown(0.4);
 
+  // Columnas: Cant. | Producto | Subtotal (como una boleta de supermercado)
+  const anchoCantidad = anchoUtil * 0.14;
+  const anchoSubtotal = anchoUtil * 0.32;
+  const anchoProducto = anchoUtil - anchoCantidad - anchoSubtotal;
+  const xCantidad = margenPt;
+  const xProducto = margenPt + anchoCantidad;
+  const xSubtotal = margenPt + anchoCantidad + anchoProducto;
+
+  doc.font("Helvetica-Bold").fontSize(7);
+  const yEncabezado = doc.y;
+  doc.text("Cant.", xCantidad, yEncabezado, { width: anchoCantidad });
+  doc.text("Producto", xProducto, yEncabezado, { width: anchoProducto });
+  doc.text("Subtotal", xSubtotal, yEncabezado, { width: anchoSubtotal, align: "right" });
+  doc.x = margenPt;
+  doc.moveDown(0.3);
+  doc.moveTo(margenPt, doc.y).lineTo(anchoPt - margenPt, doc.y).stroke();
+  doc.moveDown(0.3);
+
   productos.forEach(p => {
-    doc.font("Helvetica-Bold").fontSize(9).text(p.nombre, { width: anchoUtil });
-    doc.font("Helvetica").fontSize(8);
-    doc.text(`Tipo: ${p.tipo_unidad}`, { width: anchoUtil });
-    doc.text(`Cantidad: ${p.cantidad}`, { width: anchoUtil });
-    doc.text(`Subtotal: $${formatoCLP(p.precio_unitario * p.cantidad)}`, { width: anchoUtil });
-    doc.moveDown(0.4);
+    const yInicio = doc.y;
+    const subtotal = p.precio_unitario * p.cantidad;
+
+    // El nombre del producto es lo que puede ocupar más de una línea,
+    // así que lo escribimos primero para saber cuánto ocupó esta fila
+    doc.font("Helvetica").fontSize(8).text(p.nombre, xProducto, yInicio, { width: anchoProducto });
+    const yFinFila = doc.y;
+
+    doc.text(String(p.cantidad), xCantidad, yInicio, { width: anchoCantidad });
+    doc.text(`$${formatoCLP(subtotal)}`, xSubtotal, yInicio, { width: anchoSubtotal, align: "right" });
+
+    // Nos quedamos debajo de la línea más alta de la fila (por si el
+    // nombre del producto ocupó dos líneas)
+    doc.x = margenPt;
+    doc.y = Math.max(doc.y, yFinFila) + mm(1);
   });
 
+  doc.moveDown(0.2);
   doc.moveTo(margenPt, doc.y).lineTo(anchoPt - margenPt, doc.y).dash(2, { space: 2 }).stroke();
   doc.undash();
   doc.moveDown(0.4);
