@@ -6,7 +6,7 @@ import { verificarRol } from "../middleware/verificarRol.js";
 const router = Router();
 
 router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
-  const { cliente_id, productos } = req.body;
+  const { cliente_id, productos, metodo_pago } = req.body;
   const usuario_id = req.user.id;
 
   // VALIDACIONES (antes de tomar una conexión del pool)
@@ -16,6 +16,13 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
   if (!productos || !Array.isArray(productos) || productos.length === 0) {
     return res.status(400).json({ error: "No hay productos en la venta" });
+  }
+
+  // Al momento de la venta solo se puede dejar en efectivo (pagado al
+  // toque) o pendiente (se define el método real después, en el panel
+  // de Método de pago)
+  if (!["efectivo", "pendiente"].includes(metodo_pago)) {
+    return res.status(400).json({ error: "Método de pago debe ser 'efectivo' o 'pendiente'" });
   }
 
   // Validar cada item ANTES de tocar la base de datos
@@ -136,12 +143,17 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
       );
     }
 
-    // 2. CREAR VENTA (sin método de pago, se define después)
+    // 2. CREAR VENTA
+    // Efectivo queda resuelto de una (pagado); pendiente se define
+    // después en el panel de "Método de pago"
+    const estadoPagoInicial = metodo_pago === "efectivo" ? "pagado" : null;
+    const fechaPagoInicial = metodo_pago === "efectivo" ? new Date() : null;
+
     const venta = await client.query(
       `INSERT INTO ventas 
-      (cliente_id, usuario_id, total, metodo_pago, dias_cheque)
-      VALUES ($1,$2,$3,NULL,NULL) RETURNING *`,
-      [cliente_id, usuario_id, total]
+      (cliente_id, usuario_id, total, metodo_pago, dias_cheque, estado_pago, fecha_pago)
+      VALUES ($1,$2,$3,$4,NULL,$5,$6) RETURNING *`,
+      [cliente_id, usuario_id, total, metodo_pago, estadoPagoInicial, fechaPagoInicial]
     );
 
     const ventaId = venta.rows[0].id;
@@ -213,7 +225,12 @@ router.get("/frecuentes/:cliente_id", verificarToken, verificarRol("vendedor"), 
   }
 });
 
-const METODOS_PAGO_VALIDOS = ["efectivo", "transferencia", "deposito", "cheque", "credito"];
+// Métodos que se pueden elegir en el panel de "Método de pago" (para
+// ventas que quedaron 'pendiente' al momento de vender)
+const METODOS_PAGO_VALIDOS = ["efectivo", "credito", "transferencia", "deposito", "cheque_dia", "cheque_fecha"];
+const REQUIERE_DIAS = ["credito", "cheque_fecha"];
+const REQUIERE_BANCO = ["transferencia"];
+const BANCOS_VALIDOS = ["santander", "estado"];
 const REGEX_FECHA = /^\d{4}-\d{2}-\d{2}$/;
 
 // Helper: valida que un id venga como entero positivo
@@ -222,7 +239,9 @@ function esEnteroValido(valor) {
   return Number.isInteger(n) && n > 0;
 }
 
-// LISTAR VENTAS DE UN DÍA (para el panel de "Cierre del día")
+// LISTAR VENTAS PENDIENTES DE UN DÍA (para el panel de "Método de pago")
+// Solo las que quedaron 'pendiente' al vender — las que ya se dejaron
+// en efectivo no aparecen acá, porque ya están resueltas.
 // Un vendedor solo ve las suyas; otros roles (ej. admin) ven todas.
 router.get("/del-dia", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const fecha = req.query.fecha || new Date().toISOString().slice(0, 10);
@@ -234,11 +253,12 @@ router.get("/del-dia", verificarToken, verificarRol("vendedor"), async (req, res
   try {
     const params = [fecha];
     let query = `
-      SELECT v.id, v.total, v.metodo_pago, v.dias_cheque, v.estado_pago, v.fecha,
+      SELECT v.id, v.total, v.metodo_pago, v.dias_cheque, v.banco, v.estado_pago, v.fecha,
              c.nombre AS cliente_nombre, c.apellido AS cliente_apellido
       FROM ventas v
       JOIN clientes c ON c.id = v.cliente_id
       WHERE ((v.fecha AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date = $1::date
+        AND v.metodo_pago = 'pendiente'
     `;
 
     if (req.user.rol === "vendedor") {
@@ -252,14 +272,14 @@ router.get("/del-dia", verificarToken, verificarRol("vendedor"), async (req, res
     res.json(result.rows);
   } catch (error) {
     console.error("ERROR REAL:", error);
-    res.status(500).json({ error: "No se pudieron obtener las ventas del día" });
+    res.status(500).json({ error: "No se pudieron obtener las ventas pendientes del día" });
   }
 });
 
 // DEFINIR / ACTUALIZAR EL MÉTODO DE PAGO DE UNA VENTA
 router.put("/:id/metodo-pago", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const { id } = req.params;
-  const { metodo_pago, dias } = req.body;
+  const { metodo_pago, dias, banco } = req.body;
 
   if (!esEnteroValido(id)) {
     return res.status(400).json({ error: "id inválido" });
@@ -269,7 +289,7 @@ router.put("/:id/metodo-pago", verificarToken, verificarRol("vendedor"), async (
     return res.status(400).json({ error: "Método de pago inválido" });
   }
 
-  const requierePlazo = metodo_pago === "cheque" || metodo_pago === "credito";
+  const requierePlazo = REQUIERE_DIAS.includes(metodo_pago);
   let diasPlazo = null;
 
   if (requierePlazo) {
@@ -277,6 +297,16 @@ router.put("/:id/metodo-pago", verificarToken, verificarRol("vendedor"), async (
     if (!Number.isInteger(diasPlazo) || diasPlazo <= 0) {
       return res.status(400).json({ error: "Debes indicar los días de plazo (mayor a 0)" });
     }
+  }
+
+  const requiereBanco = REQUIERE_BANCO.includes(metodo_pago);
+  let bancoFinal = null;
+
+  if (requiereBanco) {
+    if (!BANCOS_VALIDOS.includes(banco)) {
+      return res.status(400).json({ error: "Debes indicar el banco (Santander o Estado)" });
+    }
+    bancoFinal = banco;
   }
 
   try {
@@ -294,16 +324,16 @@ router.put("/:id/metodo-pago", verificarToken, verificarRol("vendedor"), async (
 
     const estadoPago = requierePlazo ? "pendiente" : "pagado";
     const fechaPago = requierePlazo ? null : new Date();
-    const fechaMetodoPago = new Date(); // desde acá empieza a correr el plazo del crédito/cheque
+    const fechaMetodoPago = new Date(); // desde acá empieza a correr el plazo del crédito/cheque a fecha
 
     const result = await pool.query(
       `
       UPDATE ventas
-      SET metodo_pago = $1, dias_cheque = $2, estado_pago = $3, fecha_pago = $4, fecha_metodo_pago = $5, monto_pagado = 0
-      WHERE id = $6
+      SET metodo_pago = $1, dias_cheque = $2, banco = $3, estado_pago = $4, fecha_pago = $5, fecha_metodo_pago = $6, monto_pagado = 0
+      WHERE id = $7
       RETURNING *
       `,
-      [metodo_pago, diasPlazo, estadoPago, fechaPago, fechaMetodoPago, id]
+      [metodo_pago, diasPlazo, bancoFinal, estadoPago, fechaPago, fechaMetodoPago, id]
     );
 
     res.json(result.rows[0]);
@@ -313,10 +343,15 @@ router.put("/:id/metodo-pago", verificarToken, verificarRol("vendedor"), async (
   }
 });
 
-// REGISTRAR UN ABONO (pago total o parcial) A UNA DEUDA (CHEQUE O CRÉDITO)
+// Métodos con los que se puede cobrar una deuda pendiente (no incluye
+// crédito/cheque_fecha, porque esos son la causa de la deuda, no la
+// forma de saldarla)
+const METODOS_ABONO_VALIDOS = ["efectivo", "transferencia", "deposito", "cheque_dia"];
+
+// REGISTRAR UN ABONO (pago total o parcial) A UNA DEUDA (CHEQUE A FECHA O CRÉDITO)
 router.post("/:id/abono", verificarToken, verificarRol("admin", "vendedor"), async (req, res) => {
   const { id } = req.params;
-  const { monto } = req.body;
+  const { monto, metodo_pago, banco } = req.body;
 
   if (!esEnteroValido(id)) {
     return res.status(400).json({ error: "id inválido" });
@@ -325,6 +360,18 @@ router.post("/:id/abono", verificarToken, verificarRol("admin", "vendedor"), asy
   const montoNum = Number(monto);
   if (!Number.isFinite(montoNum) || montoNum <= 0) {
     return res.status(400).json({ error: "El monto debe ser mayor a 0" });
+  }
+
+  if (!METODOS_ABONO_VALIDOS.includes(metodo_pago)) {
+    return res.status(400).json({ error: "Método de pago inválido" });
+  }
+
+  let bancoFinal = null;
+  if (metodo_pago === "transferencia") {
+    if (!BANCOS_VALIDOS.includes(banco)) {
+      return res.status(400).json({ error: "Debes indicar el banco (Santander o Estado)" });
+    }
+    bancoFinal = banco;
   }
 
   const client = await pool.connect();
@@ -348,7 +395,7 @@ router.post("/:id/abono", verificarToken, verificarRol("admin", "vendedor"), asy
       return res.status(404).json({ error: "Venta no encontrada" });
     }
 
-    if (!["cheque", "credito"].includes(venta.metodo_pago)) {
+    if (!["cheque_fecha", "credito"].includes(venta.metodo_pago)) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Esta venta no tiene una deuda asociada" });
     }
@@ -364,8 +411,8 @@ router.post("/:id/abono", verificarToken, verificarRol("admin", "vendedor"), asy
     }
 
     await client.query(
-      "INSERT INTO abonos_deuda (venta_id, monto, usuario_id) VALUES ($1, $2, $3)",
-      [id, montoNum, req.user.id]
+      "INSERT INTO abonos_deuda (venta_id, monto, usuario_id, metodo_pago, banco) VALUES ($1, $2, $3, $4, $5)",
+      [id, montoNum, req.user.id, metodo_pago, bancoFinal]
     );
 
     const nuevoMontoPagado = Number(venta.monto_pagado || 0) + montoNum;

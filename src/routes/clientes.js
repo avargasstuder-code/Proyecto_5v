@@ -611,7 +611,7 @@ router.get("/:id/deuda", verificarToken, verificarRol("vendedor"), async (req, r
       FROM ventas
       WHERE cliente_id = $1
         AND estado_pago IN ('pendiente', 'parcial')
-        AND metodo_pago IN ('cheque', 'credito')
+        AND metodo_pago IN ('cheque_fecha', 'credito')
       ORDER BY fecha ASC
       `,
       [id]
