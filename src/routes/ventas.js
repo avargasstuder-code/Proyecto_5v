@@ -6,12 +6,12 @@ import { verificarRol } from "../middleware/verificarRol.js";
 const router = Router();
 
 router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
-  const { cliente_id, productos, metodo_pago } = req.body;
+  const { sucursal_id, productos, metodo_pago } = req.body;
   const usuario_id = req.user.id;
 
   // VALIDACIONES (antes de tomar una conexión del pool)
-  if (!cliente_id || !Number.isInteger(Number(cliente_id))) {
-    return res.status(400).json({ error: "Cliente requerido y debe ser válido" });
+  if (!sucursal_id || !Number.isInteger(Number(sucursal_id))) {
+    return res.status(400).json({ error: "Sucursal requerida y debe ser válida" });
   }
 
   if (!productos || !Array.isArray(productos) || productos.length === 0) {
@@ -55,6 +55,20 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
   try {
     await client.query("BEGIN");
+
+    // Verificar que la sucursal exista y, si es vendedor, que sea suya
+    const sucursalResult = await client.query("SELECT * FROM sucursales WHERE id = $1", [sucursal_id]);
+    const sucursal = sucursalResult.rows[0];
+
+    if (!sucursal) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Sucursal no encontrada" });
+    }
+
+    if (req.user.rol === "vendedor" && sucursal.usuario_id !== req.user.id) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Sucursal no encontrada" });
+    }
 
     let total = 0;
     let detalles = [];
@@ -134,12 +148,12 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
     for (const item of detalles) {
       await client.query(
         `
-        INSERT INTO cliente_productos_frecuentes (cliente_id, producto_id, cantidad_frecuente)
+        INSERT INTO cliente_productos_frecuentes (sucursal_id, producto_id, cantidad_frecuente)
         VALUES ($1, $2, $3)
-        ON CONFLICT (cliente_id, producto_id)
+        ON CONFLICT (sucursal_id, producto_id)
         DO UPDATE SET cantidad_frecuente = EXCLUDED.cantidad_frecuente
         `,
-        [cliente_id, item.producto_id, item.cantidad]
+        [sucursal_id, item.producto_id, item.cantidad]
       );
     }
 
@@ -151,9 +165,9 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
     const venta = await client.query(
       `INSERT INTO ventas 
-      (cliente_id, usuario_id, total, metodo_pago, dias_cheque, estado_pago, fecha_pago)
+      (sucursal_id, usuario_id, total, metodo_pago, dias_cheque, estado_pago, fecha_pago)
       VALUES ($1,$2,$3,$4,NULL,$5,$6) RETURNING *`,
-      [cliente_id, usuario_id, total, metodo_pago, estadoPagoInicial, fechaPagoInicial]
+      [sucursal_id, usuario_id, total, metodo_pago, estadoPagoInicial, fechaPagoInicial]
     );
 
     const ventaId = venta.rows[0].id;
@@ -174,12 +188,12 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
       await client.query(
         `
-        INSERT INTO cliente_stock (cliente_id, producto_id, stock)
+        INSERT INTO cliente_stock (sucursal_id, producto_id, stock)
         VALUES ($1, $2, $3)
-        ON CONFLICT (cliente_id, producto_id)
+        ON CONFLICT (sucursal_id, producto_id)
         DO UPDATE SET stock = cliente_stock.stock + EXCLUDED.stock
         `,
-        [cliente_id, item.producto_id, item.descuentoStock]
+        [sucursal_id, item.producto_id, item.descuentoStock]
       );
     }
 
@@ -200,11 +214,11 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
 // Requiere autenticación: antes cualquiera podía consultar los
 // productos frecuentes de cualquier cliente sin loguearse.
-router.get("/frecuentes/:cliente_id", verificarToken, verificarRol("vendedor"), async (req, res) => {
-  const { cliente_id } = req.params;
+router.get("/frecuentes/:sucursal_id", verificarToken, verificarRol("vendedor"), async (req, res) => {
+  const { sucursal_id } = req.params;
 
-  if (!Number.isInteger(Number(cliente_id))) {
-    return res.status(400).json({ error: "cliente_id inválido" });
+  if (!Number.isInteger(Number(sucursal_id))) {
+    return res.status(400).json({ error: "sucursal_id inválido" });
   }
 
   try {
@@ -213,9 +227,9 @@ router.get("/frecuentes/:cliente_id", verificarToken, verificarRol("vendedor"), 
       SELECT p.*, f.cantidad_frecuente
       FROM cliente_productos_frecuentes f
       JOIN productos p ON p.id = f.producto_id
-      WHERE f.cliente_id = $1
+      WHERE f.sucursal_id = $1
       `,
-      [cliente_id]
+      [sucursal_id]
     );
 
     res.json(result.rows);
@@ -254,9 +268,11 @@ router.get("/del-dia", verificarToken, verificarRol("vendedor"), async (req, res
     const params = [fecha];
     let query = `
       SELECT v.id, v.total, v.metodo_pago, v.dias_cheque, v.banco, v.estado_pago, v.fecha,
-             c.nombre AS cliente_nombre, c.apellido AS cliente_apellido
+             c.nombre AS cliente_nombre, c.apellido AS cliente_apellido,
+             s.direccion AS sucursal_direccion
       FROM ventas v
-      JOIN clientes c ON c.id = v.cliente_id
+      JOIN sucursales s ON s.id = v.sucursal_id
+      JOIN clientes c ON c.id = s.cliente_id
       WHERE ((v.fecha AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date = $1::date
         AND v.metodo_pago = 'pendiente'
     `;
@@ -443,18 +459,20 @@ router.post("/:id/abono", verificarToken, verificarRol("admin", "vendedor"), asy
   }
 });
 
-// PANEL DE DEUDORES: todos los clientes con saldo pendiente (cheque/crédito),
-// agrupados, con el detalle de cada deuda individual
+// PANEL DE DEUDORES: todas las sucursales con saldo pendiente
+// (cheque a fecha/crédito), agrupadas por sucursal, con el detalle de
+// cada deuda individual
 router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async (req, res) => {
   try {
     const params = [];
     let query = `
       SELECT
         v.id AS venta_id,
-        v.cliente_id,
+        v.sucursal_id,
         c.nombre AS cliente_nombre,
         c.apellido AS cliente_apellido,
-        c.telefono,
+        s.direccion AS sucursal_direccion,
+        s.telefono,
         v.total,
         v.monto_pagado,
         (v.total - v.monto_pagado) AS saldo,
@@ -471,7 +489,8 @@ router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async
             + (v.dias_cheque || ' days')::interval
         ) < (NOW() AT TIME ZONE 'America/Santiago')::date AS vencido
       FROM ventas v
-      JOIN clientes c ON c.id = v.cliente_id
+      JOIN sucursales s ON s.id = v.sucursal_id
+      JOIN clientes c ON c.id = s.cliente_id
       WHERE v.estado_pago IN ('pendiente', 'parcial')
     `;
 
@@ -484,14 +503,16 @@ router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async
 
     const result = await pool.query(query, params);
 
-    // Agrupamos las deudas por cliente
-    const porCliente = {};
+    // Agrupamos las deudas por sucursal (cada dirección es su propio
+    // deudor, aunque comparta RUT con otra sucursal del mismo cliente)
+    const porSucursal = {};
     for (const row of result.rows) {
-      if (!porCliente[row.cliente_id]) {
-        porCliente[row.cliente_id] = {
-          cliente_id: row.cliente_id,
+      if (!porSucursal[row.sucursal_id]) {
+        porSucursal[row.sucursal_id] = {
+          sucursal_id: row.sucursal_id,
           cliente_nombre: row.cliente_nombre,
           cliente_apellido: row.cliente_apellido,
+          sucursal_direccion: row.sucursal_direccion,
           telefono: row.telefono,
           deudaTotal: 0,
           deudas: []
@@ -499,8 +520,8 @@ router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async
       }
 
       const saldo = Number(row.saldo);
-      porCliente[row.cliente_id].deudaTotal += saldo;
-      porCliente[row.cliente_id].deudas.push({
+      porSucursal[row.sucursal_id].deudaTotal += saldo;
+      porSucursal[row.sucursal_id].deudas.push({
         venta_id: row.venta_id,
         total: Number(row.total),
         monto_pagado: Number(row.monto_pagado),
@@ -514,7 +535,7 @@ router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async
       });
     }
 
-    res.json(Object.values(porCliente));
+    res.json(Object.values(porSucursal));
   } catch (error) {
     console.error("ERROR REAL:", error);
     res.status(500).json({ error: "No se pudo obtener el listado de deudores" });

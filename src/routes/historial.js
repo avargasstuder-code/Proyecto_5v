@@ -41,11 +41,13 @@ async function obtenerVentaAutorizada(id, user) {
     `SELECT v.*,
             c.nombre || ' ' || c.apellido AS cliente,
             c.rut AS rut,
+            s.direccion AS direccion,
             ciu.nombre AS ciudad,
             u.nombre AS usuario
      FROM ventas v
-     JOIN clientes c ON v.cliente_id = c.id
-     LEFT JOIN ciudades ciu ON ciu.id = c.ciudad_id
+     JOIN sucursales s ON v.sucursal_id = s.id
+     JOIN clientes c ON s.cliente_id = c.id
+     LEFT JOIN ciudades ciu ON ciu.id = s.ciudad_id
      JOIN usuarios u ON v.usuario_id = u.id
      WHERE v.id = $1`,
     [id]
@@ -102,6 +104,7 @@ function generarPdfTermico(res, venta, productos) {
   doc.font("Helvetica").fontSize(8);
   doc.text(`Cliente: ${venta.cliente}`, { width: anchoUtil });
   doc.text(`Rut: ${formatoRUT(venta.rut)}`, { width: anchoUtil });
+  if (venta.direccion) doc.text(`Dirección: ${venta.direccion}`, { width: anchoUtil });
   if (venta.ciudad) doc.text(`Ciudad: ${venta.ciudad}`, { width: anchoUtil });
   doc.text(`Vendedor: ${venta.usuario}`, { width: anchoUtil });
   doc.text(`Fecha: ${formatoFecha(venta.fecha)}`, { width: anchoUtil });
@@ -201,6 +204,7 @@ function generarPdfOficio(res, venta, productos) {
   doc.font("Helvetica").fontSize(12);
   doc.text(`Cliente: ${venta.cliente}`, { width: anchoUtil });
   doc.text(`Rut: ${formatoRUT(venta.rut)}`, { width: anchoUtil });
+  if (venta.direccion) doc.text(`Dirección: ${venta.direccion}`, { width: anchoUtil });
   if (venta.ciudad) doc.text(`Ciudad: ${venta.ciudad}`, { width: anchoUtil });
   doc.text(`Vendedor: ${venta.usuario}`, { width: anchoUtil });
   doc.text(`Fecha: ${formatoFecha(venta.fecha)}`, { width: anchoUtil });
@@ -244,9 +248,11 @@ router.get("/", verificarToken, async (req, res) => {
         v.fecha,
         c.nombre || ' ' || c.apellido AS cliente,
         c.rut AS rut,
+        s.direccion AS direccion,
         u.nombre AS usuario
       FROM ventas v
-      JOIN clientes c ON v.cliente_id = c.id
+      JOIN sucursales s ON v.sucursal_id = s.id
+      JOIN clientes c ON s.cliente_id = c.id
       JOIN usuarios u ON v.usuario_id = u.id
     `;
 

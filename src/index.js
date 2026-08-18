@@ -13,6 +13,7 @@ import ciudadesRoutes from "./routes/ciudades.js";
 import categoriasRoutes from "./routes/categorias.js";
 import proveedoresRoutes from "./routes/proveedores.js";
 import comprasRoutes from "./routes/compras.js";
+import sucursalesRoutes from "./routes/sucursales.js";
 
 const app = express();
 
@@ -83,6 +84,7 @@ app.use("/api/ciudades", ciudadesRoutes);
 app.use("/api/categorias", categoriasRoutes);
 app.use("/api/proveedores", proveedoresRoutes);
 app.use("/api/compras", comprasRoutes);
+app.use("/api/sucursales", sucursalesRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: "Ruta no encontrada" });
