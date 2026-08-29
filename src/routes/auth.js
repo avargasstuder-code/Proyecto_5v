@@ -9,6 +9,8 @@ const router = Router();
 const SECRET = process.env.JWT_SECRET;
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Letras, números, punto y guión bajo, 3 a 20 caracteres
+const USERNAME_REGEX = /^[a-zA-Z0-9_.]{3,20}$/;
 
 // Roles válidos del sistema. Si en el futuro agregás uno nuevo
 // (ej: "vendedor_repartidor"), sumalo acá también.
@@ -25,13 +27,20 @@ const esPasswordSegura = (password) =>
 router.post("/register", verificarToken, verificarAdmin, async (req, res) => {
   try {
     const { nombre, password, rol } = req.body;
-    const email = req.body.email?.toLowerCase();
+    const username = req.body.username?.toLowerCase().trim();
+    const email = req.body.email?.toLowerCase().trim() || null;
 
     if (!nombre || typeof nombre !== "string" || !nombre.trim()) {
       return res.status(400).json({ error: "Nombre es obligatorio" });
     }
 
-    if (!email || !EMAIL_REGEX.test(email)) {
+    if (!username || !USERNAME_REGEX.test(username)) {
+      return res.status(400).json({
+        error: "Username inválido (3 a 20 caracteres: letras, números, punto o guión bajo)"
+      });
+    }
+
+    if (email && !EMAIL_REGEX.test(email)) {
       return res.status(400).json({ error: "Correo inválido" });
     }
 
@@ -48,52 +57,55 @@ router.post("/register", verificarToken, verificarAdmin, async (req, res) => {
     }
 
     const existe = await pool.query(
-      "SELECT id FROM usuarios WHERE email = $1",
-      [email]
+      "SELECT id FROM usuarios WHERE username = $1",
+      [username]
     );
 
     if (existe.rows.length > 0) {
       return res.status(400).json({
-        error: "El email ya está registrado"
+        error: "Ese username ya está en uso"
       });
     }
 
     const hash = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
-      `INSERT INTO usuarios (nombre, email, password, rol)
-       VALUES ($1,$2,$3,$4)
-       RETURNING id, nombre, email, rol`,
-      [nombre.trim(), email, hash, rolFinal]
+      `INSERT INTO usuarios (nombre, username, email, password, rol)
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING id, nombre, username, email, rol`,
+      [nombre.trim(), username, email, hash, rolFinal]
     );
 
     res.json(result.rows[0]);
 
   } catch (error) {
+    if (error.code === "23505") {
+      return res.status(400).json({ error: "Ese username ya está en uso" });
+    }
     console.error("ERROR REGISTER:", error);
     res.status(500).json({ error: "Error al registrar usuario" });
   }
 });
 
-// LOGIN
+// LOGIN (por username, no por email)
 router.post("/login", async (req, res) => {
   try {
-    const email = req.body.email?.toLowerCase();
+    const username = req.body.username?.toLowerCase().trim();
     const { password } = req.body;
 
-    if (!email || !password) {
+    if (!username || !password) {
       return res.status(400).json({ error: "Credenciales inválidas" });
     }
 
     const result = await pool.query(
-      "SELECT * FROM usuarios WHERE email = $1",
-      [email]
+      "SELECT * FROM usuarios WHERE username = $1",
+      [username]
     );
 
     const user = result.rows[0];
 
-    // Mensaje genérico en ambos casos (usuario no existe / contraseña incorrecta)
-    // para no revelar si un email está o no registrado en el sistema
+    // Mensaje genérico en ambos casos (usuario no existe / contraseña
+    // incorrecta) para no revelar si un username está o no registrado
     if (!user) {
       return res.status(400).json({ error: "Credenciales inválidas" });
     }
@@ -134,7 +146,7 @@ router.get(
   async (req, res) => {
     try {
       const result = await pool.query(`
-        SELECT id, nombre, email, rol, activo
+        SELECT id, nombre, username, email, rol, activo
         FROM usuarios
         ORDER BY id DESC
       `);
@@ -234,22 +246,50 @@ router.put(
     }
 });
 
-// CAMBIAR CORREO
-router.put("/cambiar-email", verificarToken, async (req, res) => {
+// CAMBIAR USERNAME (con el que se inicia sesión)
+router.put("/cambiar-username", verificarToken, async (req, res) => {
   try {
-    const email = req.body.email?.toLowerCase();
+    const username = req.body.username?.toLowerCase().trim();
 
-    if (!email || !EMAIL_REGEX.test(email)) {
-      return res.status(400).json({ error: "Correo inválido" });
+    if (!username || !USERNAME_REGEX.test(username)) {
+      return res.status(400).json({
+        error: "Username inválido (3 a 20 caracteres: letras, números, punto o guión bajo)"
+      });
     }
 
     const existe = await pool.query(
-      "SELECT id FROM usuarios WHERE email = $1 AND id != $2",
-      [email, req.user.id]
+      "SELECT id FROM usuarios WHERE username = $1 AND id != $2",
+      [username, req.user.id]
     );
 
     if (existe.rows.length > 0) {
-      return res.status(400).json({ error: "Ese correo ya está en uso" });
+      return res.status(400).json({ error: "Ese username ya está en uso" });
+    }
+
+    await pool.query(
+      "UPDATE usuarios SET username = $1 WHERE id = $2",
+      [username, req.user.id]
+    );
+
+    res.json({ ok: true, username });
+
+  } catch (error) {
+    if (error.code === "23505") {
+      return res.status(400).json({ error: "Ese username ya está en uso" });
+    }
+    console.error("ERROR CAMBIAR USERNAME:", error);
+    res.status(500).json({ error: "Error al cambiar el username" });
+  }
+});
+
+// CAMBIAR CORREO (ya no se usa para loguearse, pero se puede seguir
+// actualizando por si sirve como dato de contacto)
+router.put("/cambiar-email", verificarToken, async (req, res) => {
+  try {
+    const email = req.body.email?.toLowerCase().trim();
+
+    if (!email || !EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: "Correo inválido" });
     }
 
     await pool.query(
