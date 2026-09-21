@@ -39,7 +39,8 @@ router.get("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
         c.apellido,
         c.rut,
         d.nombre AS dia,
-        COALESCE(deuda.total_pendiente, 0) AS deuda_pendiente
+        COALESCE(deuda.total_pendiente, 0) AS deuda_pendiente,
+        (visita.id IS NOT NULL) AS visitado_hoy
       FROM sucursales s
       JOIN clientes c ON c.id = s.cliente_id
       JOIN dias_visita d ON d.id = s.dia_id
@@ -49,6 +50,9 @@ router.get("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
         WHERE estado_pago IN ('pendiente', 'parcial')
         GROUP BY sucursal_id
       ) deuda ON deuda.sucursal_id = s.id
+      LEFT JOIN visitas_ruta visita
+        ON visita.sucursal_id = s.id
+        AND visita.fecha = (NOW() AT TIME ZONE 'America/Santiago')::date
       WHERE s.activo = true
     `;
     const params = [];
@@ -58,7 +62,9 @@ router.get("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
       query += ` AND s.usuario_id = $${params.length}`;
     }
 
-    query += " ORDER BY d.id, c.nombre";
+    // Las visitadas hoy quedan al final; dentro de cada grupo, según
+    // el orden de visita que se haya definido para ese día
+    query += " ORDER BY d.id, (visita.id IS NOT NULL) ASC, s.orden_visita ASC NULLS LAST, s.id ASC";
 
     const result = await pool.query(query, params);
 
@@ -109,6 +115,98 @@ router.get("/todos", verificarToken, verificarRol("vendedor"), async (req, res) 
   } catch (error) {
     console.error("ERROR REAL:", error);
     res.status(500).json({ error: "Error al obtener listado de sucursales" });
+  }
+});
+
+// MARCAR / DESMARCAR "YA PASÉ" (se resetea solo cada día, según fecha)
+router.post("/:id/toggle-visitado", verificarToken, verificarRol("vendedor"), async (req, res) => {
+  const { id } = req.params;
+
+  if (!esEnteroValido(id)) {
+    return res.status(400).json({ error: "id inválido" });
+  }
+
+  try {
+    const sucursalAutorizada = await obtenerSucursalAutorizada(id, req.user);
+    if (!sucursalAutorizada) {
+      return res.status(404).json({ error: "Sucursal no encontrada" });
+    }
+
+    const existente = await pool.query(
+      `SELECT id FROM visitas_ruta
+       WHERE sucursal_id = $1
+         AND fecha = (NOW() AT TIME ZONE 'America/Santiago')::date`,
+      [id]
+    );
+
+    if (existente.rows.length > 0) {
+      await pool.query("DELETE FROM visitas_ruta WHERE id = $1", [existente.rows[0].id]);
+      return res.json({ visitado: false });
+    }
+
+    await pool.query(
+      `INSERT INTO visitas_ruta (sucursal_id, fecha, usuario_id)
+       VALUES ($1, (NOW() AT TIME ZONE 'America/Santiago')::date, $2)`,
+      [id, req.user.id]
+    );
+
+    res.json({ visitado: true });
+  } catch (error) {
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudo actualizar la visita" });
+  }
+});
+
+// GUARDAR EL ORDEN DE VISITA (arrastrar/mover dentro del día)
+router.put("/orden-visita", verificarToken, verificarRol("vendedor"), async (req, res) => {
+  const { ids } = req.body;
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: "ids debe ser un arreglo con al menos un elemento" });
+  }
+
+  for (const id of ids) {
+    if (!esEnteroValido(id)) {
+      return res.status(400).json({ error: "Hay un id inválido en la lista" });
+    }
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    for (let i = 0; i < ids.length; i++) {
+      const sucursalResult = await client.query(
+        "SELECT usuario_id FROM sucursales WHERE id = $1",
+        [ids[i]]
+      );
+      const sucursal = sucursalResult.rows[0];
+
+      if (!sucursal) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: `Sucursal ${ids[i]} no encontrada` });
+      }
+
+      if (req.user.rol === "vendedor" && sucursal.usuario_id !== req.user.id) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Sucursal no encontrada" });
+      }
+
+      await client.query(
+        "UPDATE sucursales SET orden_visita = $1 WHERE id = $2",
+        [i, ids[i]]
+      );
+    }
+
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudo guardar el orden" });
+  } finally {
+    client.release();
   }
 });
 
