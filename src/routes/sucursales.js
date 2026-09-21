@@ -171,42 +171,40 @@ router.put("/orden-visita", verificarToken, verificarRol("vendedor"), async (req
     }
   }
 
-  const client = await pool.connect();
+  const idsNumericos = ids.map(Number);
 
   try {
-    await client.query("BEGIN");
+    // Un solo UPDATE para todas las sucursales, en vez de uno por fila
+    // dentro de una transacción larga. Al ser una única operación
+    // atómica, dos peticiones simultáneas ya no pueden quedar
+    // esperándose mutuamente (era lo que causaba deadlocks al tocar
+    // las flechas rápido o con dos pestañas abiertas).
+    //
+    // El WHERE también valida la propiedad: si el usuario es vendedor,
+    // solo se actualizan las sucursales que le pertenecen.
+    const result = await pool.query(
+      `
+      UPDATE sucursales s
+      SET orden_visita = nuevo.orden
+      FROM (
+        SELECT id, (ordinalidad - 1) AS orden
+        FROM unnest($1::int[]) WITH ORDINALITY AS t(id, ordinalidad)
+      ) AS nuevo
+      WHERE s.id = nuevo.id
+        AND ($2::text <> 'vendedor' OR s.usuario_id = $3)
+      RETURNING s.id
+      `,
+      [idsNumericos, req.user.rol, req.user.id]
+    );
 
-    for (let i = 0; i < ids.length; i++) {
-      const sucursalResult = await client.query(
-        "SELECT usuario_id FROM sucursales WHERE id = $1",
-        [ids[i]]
-      );
-      const sucursal = sucursalResult.rows[0];
-
-      if (!sucursal) {
-        await client.query("ROLLBACK");
-        return res.status(404).json({ error: `Sucursal ${ids[i]} no encontrada` });
-      }
-
-      if (req.user.rol === "vendedor" && sucursal.usuario_id !== req.user.id) {
-        await client.query("ROLLBACK");
-        return res.status(404).json({ error: "Sucursal no encontrada" });
-      }
-
-      await client.query(
-        "UPDATE sucursales SET orden_visita = $1 WHERE id = $2",
-        [i, ids[i]]
-      );
+    if (result.rowCount !== idsNumericos.length) {
+      return res.status(404).json({ error: "Alguna sucursal no existe o no te pertenece" });
     }
 
-    await client.query("COMMIT");
     res.json({ ok: true });
   } catch (error) {
-    await client.query("ROLLBACK");
     console.error("ERROR REAL:", error);
     res.status(500).json({ error: "No se pudo guardar el orden" });
-  } finally {
-    client.release();
   }
 });
 
