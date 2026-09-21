@@ -1,0 +1,31 @@
+name: Respaldo diario de la base de datos
+
+on:
+  schedule:
+    # 07:00 UTC = aprox. 03:00-04:00 hora de Chile (de madrugada, casi
+    # no hay actividad en la app a esa hora)
+    - cron: "0 7 * * *"
+  # También lo podés correr a mano cuando quieras, desde la pestaña
+  # "Actions" de GitHub, botón "Run workflow"
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar cliente de Postgres
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Generar el respaldo (pg_dump)
+        run: |
+          fecha=$(date +'%Y-%m-%d')
+          pg_dump "$DATABASE_URL" --no-owner --no-privileges -F p -f "respaldo_${fecha}.sql"
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Subir el respaldo como archivo descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: respaldo-base-de-datos
+          path: respaldo_*.sql
+          retention-days: 30
