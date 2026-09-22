@@ -73,6 +73,7 @@ app.use("/api/auth/login", limiterLogin);
 
 // JSON
 app.use(express.json({ limit: "1mb" }));
+app.set("trust proxy", 1);
 
 // RUTAS
 app.use("/api/ventas", ventasRoutes);
