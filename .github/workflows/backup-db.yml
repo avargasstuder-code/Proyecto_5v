@@ -13,13 +13,17 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     steps:
-      - name: Instalar cliente de Postgres
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Instalar cliente de Postgres 17 (misma version que Neon)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-17
 
       - name: Generar el respaldo (pg_dump)
         run: |
           fecha=$(date +'%Y-%m-%d')
-          pg_dump "$DATABASE_URL" --no-owner --no-privileges -F p -f "respaldo_${fecha}.sql"
+          /usr/lib/postgresql/17/bin/pg_dump "$DATABASE_URL" --no-owner --no-privileges -F p -f "respaldo_${fecha}.sql"
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
