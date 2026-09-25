@@ -16,6 +16,7 @@ import comprasRoutes from "./routes/compras.js";
 import sucursalesRoutes from "./routes/sucursales.js";
 
 const app = express();
+app.set("trust proxy", 1);
 
 // Verificación temprana: si falta alguna variable de entorno crítica,
 // mejor que el servidor no arranque en silencio con un bug difícil de rastrear
@@ -73,7 +74,6 @@ app.use("/api/auth/login", limiterLogin);
 
 // JSON
 app.use(express.json({ limit: "1mb" }));
-app.set("trust proxy", 1);
 
 // RUTAS
 app.use("/api/ventas", ventasRoutes);
