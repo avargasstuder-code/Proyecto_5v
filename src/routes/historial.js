@@ -102,6 +102,7 @@ function generarPdfTermico(res, venta, productos) {
   doc.moveDown(0.6);
 
   doc.font("Helvetica").fontSize(8);
+  doc.text(`N° Folio: ${venta.id}`, { width: anchoUtil });
   doc.text(`Cliente: ${venta.cliente}`, { width: anchoUtil });
   doc.text(`Rut: ${formatoRUT(venta.rut)}`, { width: anchoUtil });
   if (venta.direccion) doc.text(`Dirección: ${venta.direccion}`, { width: anchoUtil });
@@ -202,6 +203,7 @@ function generarPdfOficio(res, venta, productos) {
   doc.moveDown(1);
 
   doc.font("Helvetica").fontSize(12);
+  doc.text(`N° Folio: ${venta.id}`, { width: anchoUtil });
   doc.text(`Cliente: ${venta.cliente}`, { width: anchoUtil });
   doc.text(`Rut: ${formatoRUT(venta.rut)}`, { width: anchoUtil });
   if (venta.direccion) doc.text(`Dirección: ${venta.direccion}`, { width: anchoUtil });
