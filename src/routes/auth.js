@@ -246,6 +246,49 @@ router.put(
     }
 });
 
+// RESETEAR CONTRASEÑA DE OTRO USUARIO (solo admin, sin necesitar la
+// contraseña actual — para cuando a alguien se le olvida)
+router.put(
+  "/usuarios/:id/resetear-password",
+  verificarToken,
+  verificarAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { nueva } = req.body;
+
+      if (isNaN(Number(id))) {
+        return res.status(400).json({ error: "ID inválido" });
+      }
+
+      if (!esPasswordSegura(nueva)) {
+        return res.status(400).json({
+          error:
+            "La nueva contraseña debe tener mínimo 8 caracteres, mayúscula, minúscula y número"
+        });
+      }
+
+      const result = await pool.query("SELECT id FROM usuarios WHERE id = $1", [id]);
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Usuario no encontrado" });
+      }
+
+      const hash = await bcrypt.hash(nueva, 10);
+
+      await pool.query(
+        "UPDATE usuarios SET password = $1 WHERE id = $2",
+        [hash, id]
+      );
+
+      res.json({ ok: true });
+
+    } catch (error) {
+      console.error("ERROR RESETEAR PASSWORD:", error);
+      res.status(500).json({ error: "Error al resetear la contraseña" });
+    }
+});
+
 // CAMBIAR USERNAME (con el que se inicia sesión)
 router.put("/cambiar-username", verificarToken, async (req, res) => {
   try {
