@@ -205,13 +205,23 @@ function generarPdfOficio(res, venta, productos) {
   doc.moveDown(1);
 
   doc.font("Helvetica").fontSize(12);
-  doc.text(`N° Folio: ${venta.id}`, { width: anchoUtil });
   doc.text(`Cliente: ${venta.cliente}`, { width: anchoUtil });
   doc.text(`Rut: ${formatoRUT(venta.rut)}`, { width: anchoUtil });
   if (venta.direccion) doc.text(`Dirección: ${venta.direccion}`, { width: anchoUtil });
   if (venta.ciudad) doc.text(`Ciudad: ${venta.ciudad}`, { width: anchoUtil });
   doc.text(`Vendedor: ${venta.usuario}`, { width: anchoUtil });
-  doc.text(`Fecha: ${formatoFecha(venta.fecha)}`, { width: anchoUtil });
+
+  // Fecha a la izquierda y N° de folio a la derecha, en la misma línea
+  const yFecha = doc.y;
+  doc.text(`Fecha: ${formatoFecha(venta.fecha)}`, margenPt, yFecha, { width: anchoUtil });
+  const yDespuesFecha = doc.y;
+  doc.font("Helvetica-Bold").text(`N° Folio: ${venta.id}`, margenPt, yFecha, {
+    width: anchoUtil,
+    align: "right"
+  });
+  doc.font("Helvetica");
+  doc.x = margenPt;
+  doc.y = Math.max(doc.y, yDespuesFecha);
 
   doc.moveDown(0.6);
   doc.moveTo(margenPt, doc.y).lineTo(anchoPt - margenPt, doc.y).stroke();
