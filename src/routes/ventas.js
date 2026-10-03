@@ -573,7 +573,7 @@ const MAX_MOTIVO = 200;
 // LISTAR PEDIDOS PARA REPARTIR
 // ?estado=pendiente (default): todos los pedidos aún sin entregar
 // ?estado=entregado | no_entregado & fecha=YYYY-MM-DD: los resueltos ese día
-router.get("/repartos", verificarToken, verificarRol("repartidor", "admin"), async (req, res) => {
+router.get("/repartos", verificarToken, verificarRol("repartidor"), async (req, res) => {
   const estado = req.query.estado || "pendiente";
   const fecha = req.query.fecha || new Date().toISOString().slice(0, 10);
 
@@ -634,7 +634,7 @@ router.get("/repartos", verificarToken, verificarRol("repartidor", "admin"), asy
 // MARCAR UN PEDIDO COMO ENTREGADO O NO ENTREGADO
 // body: { entregado: true,  metodo_pago: "efectivo" | "pendiente" }
 //       { entregado: false, motivo: "Local cerrado" }
-router.put("/:id/entrega", verificarToken, verificarRol("repartidor", "admin"), async (req, res) => {
+router.put("/:id/entrega", verificarToken, verificarRol("repartidor"), async (req, res) => {
   const { id } = req.params;
   const { entregado, metodo_pago } = req.body;
   const motivo = typeof req.body.motivo === "string" ? req.body.motivo.trim() : "";
