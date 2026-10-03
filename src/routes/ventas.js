@@ -188,6 +188,29 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
       );
     }
 
+    // 4. MARCAR LA VISITA DE HOY COMO "CON VENTA" (el cliente baja al
+    // final de la ruta del día). Si antes se había marcado "sin venta",
+    // se reemplaza.
+    const visitaHoy = await client.query(
+      `SELECT id FROM visitas_ruta
+       WHERE sucursal_id = $1
+         AND fecha = (NOW() AT TIME ZONE 'America/Santiago')::date`,
+      [sucursal_id]
+    );
+
+    if (visitaHoy.rows.length > 0) {
+      await client.query(
+        "UPDATE visitas_ruta SET resultado = 'venta', motivo = NULL WHERE id = $1",
+        [visitaHoy.rows[0].id]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO visitas_ruta (sucursal_id, fecha, usuario_id, resultado)
+         VALUES ($1, (NOW() AT TIME ZONE 'America/Santiago')::date, $2, 'venta')`,
+        [sucursal_id, usuario_id]
+      );
+    }
+
     await client.query("COMMIT");
 
     res.json({ mensaje: "Venta realizada", ventaId });

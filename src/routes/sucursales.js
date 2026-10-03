@@ -39,7 +39,9 @@ router.get("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
         c.apellido,
         c.rut,
         d.nombre AS dia,
-        (visita.id IS NOT NULL) AS visitado_hoy
+        (visita.id IS NOT NULL) AS visitado_hoy,
+        visita.resultado AS resultado_visita,
+        visita.motivo AS motivo_visita
       FROM sucursales s
       JOIN clientes c ON c.id = s.cliente_id
       JOIN dias_visita d ON d.id = s.dia_id
@@ -108,8 +110,62 @@ router.get("/todos", verificarToken, verificarRol("vendedor"), async (req, res) 
   }
 });
 
-// MARCAR / DESMARCAR "YA PASÉ" (se resetea solo cada día, según fecha)
-router.post("/:id/toggle-visitado", verificarToken, verificarRol("vendedor"), async (req, res) => {
+// MARCAR "NO SE REALIZÓ VENTA" EN LA VISITA DE HOY (con motivo).
+// La visita "con venta" se marca sola al registrar una venta.
+router.post("/:id/sin-venta", verificarToken, verificarRol("vendedor"), async (req, res) => {
+  const { id } = req.params;
+  const motivo = typeof req.body.motivo === "string" ? req.body.motivo.trim() : "";
+
+  if (!esEnteroValido(id)) {
+    return res.status(400).json({ error: "id inválido" });
+  }
+  if (!motivo) {
+    return res.status(400).json({ error: "Indica el motivo por el que no hubo venta" });
+  }
+  if (motivo.length > 200) {
+    return res.status(400).json({ error: "El motivo no puede superar los 200 caracteres" });
+  }
+
+  try {
+    const sucursalAutorizada = await obtenerSucursalAutorizada(id, req.user);
+    if (!sucursalAutorizada) {
+      return res.status(404).json({ error: "Sucursal no encontrada" });
+    }
+
+    const existente = await pool.query(
+      `SELECT id, resultado FROM visitas_ruta
+       WHERE sucursal_id = $1
+         AND fecha = (NOW() AT TIME ZONE 'America/Santiago')::date`,
+      [id]
+    );
+
+    if (existente.rows[0]?.resultado === "venta") {
+      return res.status(400).json({ error: "A este cliente ya se le hizo una venta hoy" });
+    }
+
+    if (existente.rows.length > 0) {
+      await pool.query(
+        "UPDATE visitas_ruta SET resultado = 'sin_venta', motivo = $1, usuario_id = $2 WHERE id = $3",
+        [motivo, req.user.id, existente.rows[0].id]
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO visitas_ruta (sucursal_id, fecha, usuario_id, resultado, motivo)
+         VALUES ($1, (NOW() AT TIME ZONE 'America/Santiago')::date, $2, 'sin_venta', $3)`,
+        [id, req.user.id, motivo]
+      );
+    }
+
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudo guardar la visita" });
+  }
+});
+
+// DESHACER "SIN VENTA" (por si se marcó por error). No toca las
+// visitas con venta.
+router.delete("/:id/sin-venta", verificarToken, verificarRol("vendedor"), async (req, res) => {
   const { id } = req.params;
 
   if (!esEnteroValido(id)) {
@@ -122,28 +178,18 @@ router.post("/:id/toggle-visitado", verificarToken, verificarRol("vendedor"), as
       return res.status(404).json({ error: "Sucursal no encontrada" });
     }
 
-    const existente = await pool.query(
-      `SELECT id FROM visitas_ruta
+    await pool.query(
+      `DELETE FROM visitas_ruta
        WHERE sucursal_id = $1
-         AND fecha = (NOW() AT TIME ZONE 'America/Santiago')::date`,
+         AND fecha = (NOW() AT TIME ZONE 'America/Santiago')::date
+         AND (resultado = 'sin_venta' OR resultado IS NULL)`,
       [id]
     );
 
-    if (existente.rows.length > 0) {
-      await pool.query("DELETE FROM visitas_ruta WHERE id = $1", [existente.rows[0].id]);
-      return res.json({ visitado: false });
-    }
-
-    await pool.query(
-      `INSERT INTO visitas_ruta (sucursal_id, fecha, usuario_id)
-       VALUES ($1, (NOW() AT TIME ZONE 'America/Santiago')::date, $2)`,
-      [id, req.user.id]
-    );
-
-    res.json({ visitado: true });
+    res.json({ ok: true });
   } catch (error) {
     console.error("ERROR REAL:", error);
-    res.status(500).json({ error: "No se pudo actualizar la visita" });
+    res.status(500).json({ error: "No se pudo deshacer la visita" });
   }
 });
 
