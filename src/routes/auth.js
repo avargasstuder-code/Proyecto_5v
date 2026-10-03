@@ -14,7 +14,7 @@ const USERNAME_REGEX = /^[a-zA-Z0-9_.]{3,20}$/;
 
 // Roles válidos del sistema. Si en el futuro agregás uno nuevo
 // (ej: "vendedor_repartidor"), sumalo acá también.
-const ROLES_VALIDOS = ["admin", "vendedor"];
+const ROLES_VALIDOS = ["admin", "vendedor", "repartidor"];
 
 const esPasswordSegura = (password) =>
   typeof password === "string" &&

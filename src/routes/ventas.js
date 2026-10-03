@@ -6,7 +6,9 @@ import { verificarRol } from "../middleware/verificarRol.js";
 const router = Router();
 
 router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
-  const { sucursal_id, productos, metodo_pago } = req.body;
+  // El vendedor ya no elige método de pago: la venta queda como un
+  // pedido pendiente de entrega. El repartidor define el pago al entregar.
+  const { sucursal_id, productos } = req.body;
   const usuario_id = req.user.id;
 
   // VALIDACIONES (antes de tomar una conexión del pool)
@@ -16,13 +18,6 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
   if (!productos || !Array.isArray(productos) || productos.length === 0) {
     return res.status(400).json({ error: "No hay productos en la venta" });
-  }
-
-  // Al momento de la venta solo se puede dejar en efectivo (pagado al
-  // toque) o pendiente (se define el método real después, en el panel
-  // de Método de pago)
-  if (!["efectivo", "pendiente"].includes(metodo_pago)) {
-    return res.status(400).json({ error: "Método de pago debe ser 'efectivo' o 'pendiente'" });
   }
 
   // Validar cada item ANTES de tocar la base de datos
@@ -157,17 +152,13 @@ router.post("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
       );
     }
 
-    // 2. CREAR VENTA
-    // Efectivo queda resuelto de una (pagado); pendiente se define
-    // después en el panel de "Método de pago"
-    const estadoPagoInicial = metodo_pago === "efectivo" ? "pagado" : null;
-    const fechaPagoInicial = metodo_pago === "efectivo" ? new Date() : null;
-
+    // 2. CREAR VENTA (queda como pedido pendiente de entrega, sin
+    // método de pago: eso lo define el repartidor al entregar)
     const venta = await client.query(
       `INSERT INTO ventas 
-      (sucursal_id, usuario_id, total, metodo_pago, dias_cheque, estado_pago, fecha_pago)
-      VALUES ($1,$2,$3,$4,NULL,$5,$6) RETURNING *`,
-      [sucursal_id, usuario_id, total, metodo_pago, estadoPagoInicial, fechaPagoInicial]
+      (sucursal_id, usuario_id, total, metodo_pago, dias_cheque, estado_pago, fecha_pago, estado_entrega)
+      VALUES ($1,$2,$3,NULL,NULL,NULL,NULL,'pendiente') RETURNING *`,
+      [sucursal_id, usuario_id, total]
     );
 
     const ventaId = venta.rows[0].id;
@@ -243,7 +234,7 @@ router.get("/frecuentes/:sucursal_id", verificarToken, verificarRol("vendedor"),
 // ventas que quedaron 'pendiente' al momento de vender)
 const METODOS_PAGO_VALIDOS = ["efectivo", "credito", "transferencia", "deposito", "cheque_dia", "cheque_fecha"];
 const REQUIERE_DIAS = ["credito", "cheque_fecha"];
-const REQUIERE_BANCO = ["transferencia"];
+const REQUIERE_BANCO = ["transferencia", "deposito"];
 const BANCOS_VALIDOS = ["santander", "estado"];
 const REGEX_FECHA = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -253,47 +244,34 @@ function esEnteroValido(valor) {
   return Number.isInteger(n) && n > 0;
 }
 
-// LISTAR VENTAS PENDIENTES DE UN DÍA (para el panel de "Método de pago")
-// Solo las que quedaron 'pendiente' al vender — las que ya se dejaron
-// en efectivo no aparecen acá, porque ya están resueltas.
-// Un vendedor solo ve las suyas; otros roles (ej. admin) ven todas.
-router.get("/del-dia", verificarToken, verificarRol("vendedor"), async (req, res) => {
-  const fecha = req.query.fecha || new Date().toISOString().slice(0, 10);
-
-  if (!REGEX_FECHA.test(fecha)) {
-    return res.status(400).json({ error: "Fecha inválida, formato esperado YYYY-MM-DD" });
-  }
-
+// LISTAR PEDIDOS ENTREGADOS CON PAGO PENDIENTE (panel "Método de pago")
+// Son los que el repartidor entregó y dejó como 'pendiente' porque
+// todavía no se sabe cómo pagó el cliente (transferencia, cheque, etc.).
+// Se muestran todos, sin importar la fecha, hasta que se defina el pago.
+router.get("/del-dia", verificarToken, verificarRol("repartidor", "admin"), async (req, res) => {
   try {
-    const params = [fecha];
-    let query = `
-      SELECT v.id, v.total, v.metodo_pago, v.dias_cheque, v.banco, v.estado_pago, v.fecha,
+    const result = await pool.query(`
+      SELECT v.id, v.total, v.metodo_pago, v.dias_cheque, v.banco, v.estado_pago, v.fecha, v.fecha_entrega,
              c.nombre AS cliente_nombre, c.apellido AS cliente_apellido,
-             s.direccion AS sucursal_direccion
+             s.direccion AS sucursal_direccion,
+             u.nombre AS vendedor
       FROM ventas v
       JOIN sucursales s ON s.id = v.sucursal_id
       JOIN clientes c ON c.id = s.cliente_id
-      WHERE ((v.fecha AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date = $1::date
-        AND v.metodo_pago = 'pendiente'
-    `;
-
-    if (req.user.rol === "vendedor") {
-      params.push(req.user.id);
-      query += ` AND v.usuario_id = $${params.length}`;
-    }
-
-    query += " ORDER BY v.fecha ASC";
-
-    const result = await pool.query(query, params);
+      JOIN usuarios u ON u.id = v.usuario_id
+      WHERE v.metodo_pago = 'pendiente'
+        AND v.estado_entrega = 'entregado'
+      ORDER BY COALESCE(v.fecha_entrega, v.fecha) ASC
+    `);
     res.json(result.rows);
   } catch (error) {
     console.error("ERROR REAL:", error);
-    res.status(500).json({ error: "No se pudieron obtener las ventas pendientes del día" });
+    res.status(500).json({ error: "No se pudieron obtener las ventas con pago pendiente" });
   }
 });
 
 // DEFINIR / ACTUALIZAR EL MÉTODO DE PAGO DE UNA VENTA
-router.put("/:id/metodo-pago", verificarToken, verificarRol("vendedor"), async (req, res) => {
+router.put("/:id/metodo-pago", verificarToken, verificarRol("repartidor", "admin"), async (req, res) => {
   const { id } = req.params;
   const { metodo_pago, dias, banco } = req.body;
 
@@ -333,9 +311,14 @@ router.put("/:id/metodo-pago", verificarToken, verificarRol("vendedor"), async (
       return res.status(404).json({ error: "Venta no encontrada" });
     }
 
-    // Un vendedor solo puede definir el método de pago de sus propias ventas
-    if (req.user.rol === "vendedor" && venta.usuario_id !== req.user.id) {
-      return res.status(404).json({ error: "Venta no encontrada" });
+    if (venta.estado_entrega !== "entregado") {
+      return res.status(400).json({ error: "Solo se puede definir el pago de un pedido entregado" });
+    }
+
+    // Si ya se registraron abonos, cambiar el método borraría ese
+    // historial de pagos: se gestiona desde Deudores
+    if (Number(venta.monto_pagado || 0) > 0) {
+      return res.status(400).json({ error: "Esta venta ya tiene abonos registrados, gestiónala desde Deudores" });
     }
 
     const estadoPago = requierePlazo ? "pendiente" : "pagado";
@@ -365,7 +348,7 @@ router.put("/:id/metodo-pago", verificarToken, verificarRol("vendedor"), async (
 const METODOS_ABONO_VALIDOS = ["efectivo", "transferencia", "deposito", "cheque_dia"];
 
 // REGISTRAR UN ABONO (pago total o parcial) A UNA DEUDA (CHEQUE A FECHA O CRÉDITO)
-router.post("/:id/abono", verificarToken, verificarRol("admin", "vendedor"), async (req, res) => {
+router.post("/:id/abono", verificarToken, verificarRol("admin", "repartidor"), async (req, res) => {
   const { id } = req.params;
   const { monto, metodo_pago, banco } = req.body;
 
@@ -383,7 +366,7 @@ router.post("/:id/abono", verificarToken, verificarRol("admin", "vendedor"), asy
   }
 
   let bancoFinal = null;
-  if (metodo_pago === "transferencia") {
+  if (REQUIERE_BANCO.includes(metodo_pago)) {
     if (!BANCOS_VALIDOS.includes(banco)) {
       return res.status(400).json({ error: "Debes indicar el banco (Santander o Estado)" });
     }
@@ -402,11 +385,6 @@ router.post("/:id/abono", verificarToken, verificarRol("admin", "vendedor"), asy
     const venta = ventaResult.rows[0];
 
     if (!venta) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Venta no encontrada" });
-    }
-
-    if (req.user.rol === "vendedor" && venta.usuario_id !== req.user.id) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Venta no encontrada" });
     }
@@ -462,7 +440,7 @@ router.post("/:id/abono", verificarToken, verificarRol("admin", "vendedor"), asy
 // PANEL DE DEUDORES: todas las sucursales con saldo pendiente
 // (cheque a fecha/crédito), agrupadas por sucursal, con el detalle de
 // cada deuda individual
-router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async (req, res) => {
+router.get("/deudores", verificarToken, verificarRol("admin", "repartidor"), async (req, res) => {
   try {
     const params = [];
     let query = `
@@ -492,12 +470,8 @@ router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async
       JOIN sucursales s ON s.id = v.sucursal_id
       JOIN clientes c ON c.id = s.cliente_id
       WHERE v.estado_pago IN ('pendiente', 'parcial')
+        AND v.metodo_pago IN ('cheque_fecha', 'credito')
     `;
-
-    if (req.user.rol === "vendedor") {
-      params.push(req.user.id);
-      query += ` AND v.usuario_id = $${params.length}`;
-    }
 
     query += " ORDER BY vencimiento ASC";
 
@@ -543,7 +517,7 @@ router.get("/deudores", verificarToken, verificarRol("admin", "vendedor"), async
 });
 
 // RESUMEN DEL DÍA POR MÉTODO DE PAGO (para cuadrar caja)
-router.get("/resumen", verificarToken, verificarRol("vendedor"), async (req, res) => {
+router.get("/resumen", verificarToken, verificarRol("repartidor", "admin"), async (req, res) => {
   const fecha = req.query.fecha || new Date().toISOString().slice(0, 10);
 
   if (!REGEX_FECHA.test(fecha)) {
@@ -558,23 +532,219 @@ router.get("/resumen", verificarToken, verificarRol("vendedor"), async (req, res
         COUNT(*)::int AS cantidad,
         COALESCE(SUM(v.total), 0)::numeric AS total
       FROM ventas v
-      WHERE ((v.fecha AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date = $1::date
+      WHERE ((COALESCE(v.fecha_entrega, v.fecha) AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date = $1::date
+        AND v.estado_entrega = 'entregado'
     `;
-
-    if (req.user.rol === "vendedor") {
-      params.push(req.user.id);
-      query += ` AND v.usuario_id = $${params.length}`;
-    }
 
     query += " GROUP BY COALESCE(v.metodo_pago, 'sin_definir') ORDER BY metodo_pago";
 
     const result = await pool.query(query, params);
     const totalGeneral = result.rows.reduce((acc, r) => acc + Number(r.total), 0);
 
-    res.json({ fecha, detalle: result.rows, totalGeneral });
+    // Pedidos que ese día se marcaron como no entregados (anulados)
+    const noEntregados = await pool.query(
+      `
+      SELECT COUNT(*)::int AS cantidad, COALESCE(SUM(total), 0)::numeric AS total
+      FROM ventas
+      WHERE estado_entrega = 'no_entregado'
+        AND ((fecha_entrega AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date = $1::date
+      `,
+      [fecha]
+    );
+
+    res.json({ fecha, detalle: result.rows, totalGeneral, noEntregados: noEntregados.rows[0] });
   } catch (error) {
     console.error("ERROR REAL:", error);
     res.status(500).json({ error: "No se pudo obtener el resumen del día" });
+  }
+});
+
+// =====================================================================
+// REPARTOS (rol repartidor)
+// Los vendedores toman pedidos; al día siguiente el repartidor los ve
+// acá, y marca cada uno como entregado (efectivo o pendiente) o como
+// no entregado con el motivo (en ese caso el pedido se anula y el
+// stock vuelve al inventario).
+// =====================================================================
+
+const ESTADOS_ENTREGA = ["pendiente", "entregado", "no_entregado"];
+const MAX_MOTIVO = 200;
+
+// LISTAR PEDIDOS PARA REPARTIR
+// ?estado=pendiente (default): todos los pedidos aún sin entregar
+// ?estado=entregado | no_entregado & fecha=YYYY-MM-DD: los resueltos ese día
+router.get("/repartos", verificarToken, verificarRol("repartidor", "admin"), async (req, res) => {
+  const estado = req.query.estado || "pendiente";
+  const fecha = req.query.fecha || new Date().toISOString().slice(0, 10);
+
+  if (!ESTADOS_ENTREGA.includes(estado)) {
+    return res.status(400).json({ error: "Estado inválido" });
+  }
+  if (!REGEX_FECHA.test(fecha)) {
+    return res.status(400).json({ error: "Fecha inválida, formato esperado YYYY-MM-DD" });
+  }
+
+  try {
+    const params = [estado];
+    let query = `
+      SELECT v.id, v.total, v.fecha, v.estado_entrega, v.fecha_entrega, v.motivo_no_entrega,
+             v.metodo_pago, v.estado_pago,
+             c.nombre AS cliente_nombre, c.apellido AS cliente_apellido,
+             s.direccion AS sucursal_direccion, s.telefono,
+             ciu.nombre AS ciudad,
+             u.nombre AS vendedor,
+             rep.nombre AS repartidor,
+             COALESCE((
+               SELECT json_agg(json_build_object(
+                 'nombre', p.nombre,
+                 'tipo_unidad', d.tipo_unidad,
+                 'cantidad', d.cantidad
+               ) ORDER BY p.nombre)
+               FROM detalle_venta d
+               JOIN productos p ON p.id = d.producto_id
+               WHERE d.venta_id = v.id
+             ), '[]'::json) AS productos
+      FROM ventas v
+      JOIN sucursales s ON s.id = v.sucursal_id
+      JOIN clientes c ON c.id = s.cliente_id
+      LEFT JOIN ciudades ciu ON ciu.id = s.ciudad_id
+      JOIN usuarios u ON u.id = v.usuario_id
+      LEFT JOIN usuarios rep ON rep.id = v.repartidor_id
+      WHERE v.estado_entrega = $1
+    `;
+
+    if (estado === "pendiente") {
+      query += " ORDER BY ciu.nombre NULLS LAST, s.orden_visita ASC NULLS LAST, v.fecha ASC";
+    } else {
+      params.push(fecha);
+      query += `
+        AND ((v.fecha_entrega AT TIME ZONE 'UTC') AT TIME ZONE 'America/Santiago')::date = $2::date
+        ORDER BY v.fecha_entrega DESC
+      `;
+    }
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (error) {
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudieron obtener los pedidos" });
+  }
+});
+
+// MARCAR UN PEDIDO COMO ENTREGADO O NO ENTREGADO
+// body: { entregado: true,  metodo_pago: "efectivo" | "pendiente" }
+//       { entregado: false, motivo: "Local cerrado" }
+router.put("/:id/entrega", verificarToken, verificarRol("repartidor", "admin"), async (req, res) => {
+  const { id } = req.params;
+  const { entregado, metodo_pago } = req.body;
+  const motivo = typeof req.body.motivo === "string" ? req.body.motivo.trim() : "";
+
+  if (!esEnteroValido(id)) {
+    return res.status(400).json({ error: "id inválido" });
+  }
+  if (typeof entregado !== "boolean") {
+    return res.status(400).json({ error: "Indica si el pedido fue entregado o no" });
+  }
+  if (entregado && !["efectivo", "pendiente"].includes(metodo_pago)) {
+    return res.status(400).json({ error: "Indica si se pagó en efectivo o queda pendiente" });
+  }
+  if (!entregado && !motivo) {
+    return res.status(400).json({ error: "Indica el motivo por el que no se entregó" });
+  }
+  if (motivo.length > MAX_MOTIVO) {
+    return res.status(400).json({ error: `El motivo no puede superar los ${MAX_MOTIVO} caracteres` });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const ventaResult = await client.query("SELECT * FROM ventas WHERE id = $1 FOR UPDATE", [id]);
+    const venta = ventaResult.rows[0];
+
+    if (!venta) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Pedido no encontrado" });
+    }
+    if (venta.estado_entrega !== "pendiente") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Este pedido ya fue marcado anteriormente" });
+    }
+
+    let result;
+
+    if (entregado) {
+      const esEfectivo = metodo_pago === "efectivo";
+      result = await client.query(
+        `
+        UPDATE ventas
+        SET estado_entrega = 'entregado',
+            fecha_entrega = (NOW() AT TIME ZONE 'UTC'),
+            repartidor_id = $1,
+            motivo_no_entrega = NULL,
+            metodo_pago = $2,
+            estado_pago = $3,
+            fecha_pago = CASE WHEN $4::boolean THEN (NOW() AT TIME ZONE 'UTC') ELSE NULL END,
+            fecha_metodo_pago = CASE WHEN $4::boolean THEN (NOW() AT TIME ZONE 'UTC') ELSE NULL END
+        WHERE id = $5
+        RETURNING *
+        `,
+        [req.user.id, metodo_pago, esEfectivo ? "pagado" : null, esEfectivo, id]
+      );
+    } else {
+      // No se entregó: el pedido se anula y la mercadería vuelve al inventario
+      const detalle = await client.query(
+        "SELECT producto_id, tipo_unidad, cantidad FROM detalle_venta WHERE venta_id = $1",
+        [id]
+      );
+
+      for (const item of detalle.rows) {
+        // Mismo cálculo que al vender: medio cartón descuenta 0.5
+        const devolver = item.tipo_unidad === "medio"
+          ? Number(item.cantidad) * 0.5
+          : Number(item.cantidad);
+
+        await client.query(
+          "UPDATE productos SET stock = stock + $1 WHERE id = $2",
+          [devolver, item.producto_id]
+        );
+
+        await client.query(
+          `
+          UPDATE cliente_stock
+          SET stock = GREATEST(stock - $1, 0)
+          WHERE sucursal_id = $2 AND producto_id = $3
+          `,
+          [devolver, venta.sucursal_id, item.producto_id]
+        );
+      }
+
+      result = await client.query(
+        `
+        UPDATE ventas
+        SET estado_entrega = 'no_entregado',
+            fecha_entrega = (NOW() AT TIME ZONE 'UTC'),
+            repartidor_id = $1,
+            motivo_no_entrega = $2,
+            metodo_pago = NULL,
+            estado_pago = NULL,
+            fecha_pago = NULL
+        WHERE id = $3
+        RETURNING *
+        `,
+        [req.user.id, motivo, id]
+      );
+    }
+
+    await client.query("COMMIT");
+    res.json(result.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("ERROR REAL:", error);
+    res.status(500).json({ error: "No se pudo actualizar el pedido" });
+  } finally {
+    client.release();
   }
 });
 

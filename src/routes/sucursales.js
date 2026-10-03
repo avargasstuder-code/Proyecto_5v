@@ -39,17 +39,10 @@ router.get("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
         c.apellido,
         c.rut,
         d.nombre AS dia,
-        COALESCE(deuda.total_pendiente, 0) AS deuda_pendiente,
         (visita.id IS NOT NULL) AS visitado_hoy
       FROM sucursales s
       JOIN clientes c ON c.id = s.cliente_id
       JOIN dias_visita d ON d.id = s.dia_id
-      LEFT JOIN (
-        SELECT sucursal_id, SUM(total - monto_pagado) AS total_pendiente
-        FROM ventas
-        WHERE estado_pago IN ('pendiente', 'parcial')
-        GROUP BY sucursal_id
-      ) deuda ON deuda.sucursal_id = s.id
       LEFT JOIN visitas_ruta visita
         ON visita.sucursal_id = s.id
         AND visita.fecha = (NOW() AT TIME ZONE 'America/Santiago')::date
@@ -68,12 +61,9 @@ router.get("/", verificarToken, verificarRol("vendedor"), async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    const sucursales = result.rows.map(s => ({
-      ...s,
-      deuda_pendiente: Number(s.deuda_pendiente)
-    }));
-
-    res.json(sucursales);
+    // La deuda de cada cliente ya no se le muestra al vendedor: los
+    // pagos y deudores ahora los gestionan el repartidor y el admin
+    res.json(result.rows);
   } catch (error) {
     console.error("ERROR REAL:", error);
     res.status(500).json({ error: "Error al obtener sucursales" });
@@ -620,8 +610,8 @@ router.get(
 );
 
 // DEUDA PENDIENTE DE UNA SUCURSAL (cheque a fecha o crédito aún no
-// cobrados). Se usa antes de venderle, para avisarle al vendedor.
-router.get("/:id/deuda", verificarToken, verificarRol("vendedor"), async (req, res) => {
+// cobrados). Solo para repartidor/admin: el vendedor ya no ve deudas.
+router.get("/:id/deuda", verificarToken, verificarRol("repartidor", "admin"), async (req, res) => {
   const { id } = req.params;
 
   if (!esEnteroValido(id)) {

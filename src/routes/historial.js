@@ -43,12 +43,14 @@ async function obtenerVentaAutorizada(id, user) {
             c.rut AS rut,
             s.direccion AS direccion,
             ciu.nombre AS ciudad,
-            u.nombre AS usuario
+            u.nombre AS usuario,
+            rep.nombre AS repartidor
      FROM ventas v
      JOIN sucursales s ON v.sucursal_id = s.id
      JOIN clientes c ON s.cliente_id = c.id
      LEFT JOIN ciudades ciu ON ciu.id = s.ciudad_id
      JOIN usuarios u ON v.usuario_id = u.id
+     LEFT JOIN usuarios rep ON v.repartidor_id = rep.id
      WHERE v.id = $1`,
     [id]
   );
@@ -247,6 +249,11 @@ router.get("/", verificarToken, async (req, res) => {
         v.total,
         v.metodo_pago,
         v.dias_cheque,
+        v.banco,
+        v.estado_pago,
+        v.estado_entrega,
+        v.fecha_entrega,
+        v.motivo_no_entrega,
         v.fecha,
         c.nombre || ' ' || c.apellido AS cliente,
         c.rut AS rut,
